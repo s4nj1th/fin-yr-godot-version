@@ -1,0 +1,29 @@
+# EditorConfig configuration for Godot 4 + C# Project
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.cs]
+indent_style = space
+indent_size = 4
+csharp_indent_case_contents = true
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_style_expression_bodied_methods = when_possible:suggestion
+
+[*.{json,yml,yaml,md}]
+indent_style = space
+indent_size = 2
+
+[*.{tscn,tres,godot}]
+indent_style = space
+indent_size = 4

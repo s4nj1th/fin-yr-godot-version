@@ -1,0 +1,45 @@
+# Auto-detect text files and perform LF normalization
+* text=auto eol=lf
+
+# Godot & C# Source Files
+*.cs text eol=lf
+*.gd text eol=lf
+*.tscn text eol=lf
+*.tres text eol=lf
+*.godot text eol=lf
+*.csproj text eol=lf
+*.sln text eol=lf
+
+# Data & Config Files
+*.json text eol=lf
+*.xml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.cfg text eol=lf
+.editorconfig text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Binary Asset Files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tga binary
+*.svg binary
+*.webp binary
+*.wav binary
+*.ogg binary
+*.mp3 binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.glb binary
+*.gltf binary
+*.fbx binary
+*.obj binary
+*.blend binary
+*.res binary
+*.import binary

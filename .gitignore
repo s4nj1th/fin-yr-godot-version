@@ -1,0 +1,96 @@
+# ==========================================
+# Godot 4.x & C# / .NET Project .gitignore
+# ==========================================
+
+# Godot 4 internal cache and metadata directory
+.godot/
+
+# Godot 3 / Legacy import cache (if any)
+.import/
+
+# Godot mono build directories (legacy/specific)
+*.mono/
+
+# Exported translation files
+*.translation
+
+# Godot export binaries
+*.apk
+*.aab
+*.a
+*.so
+*.dylib
+*.exe
+*.dll
+
+# ==========================================
+# C# / .NET Build Artifacts
+# ==========================================
+bin/
+obj/
+*.user
+*.userosv
+*.sln.docstates
+*.suo
+*.userprefs
+*.pidb
+*.booproj
+*.svclog
+
+# ==========================================
+# IDE & Code Editor Directories
+# ==========================================
+# Visual Studio
+.vs/
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+build/
+bld/
+[Bb]in/
+[Oo]bj/
+
+# JetBrains Rider / Resharper
+.idea/
+*.sln.iml
+
+# Visual Studio Code (Ignore cache, keep settings/launch/tasks if committed)
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# ==========================================
+# OS & System Junk Files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ==========================================
+# Environment & Secret Configuration
+# ==========================================
+.env
+.env.local
+.env.*.local
+*.env
+secrets.json
+
+# ==========================================
+# Logs & Temporary Files
+# ==========================================
+*.log
+*.tmp
+*.bak
+*.swp
+*~

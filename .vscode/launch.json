@@ -1,0 +1,11 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Play in Godot",
+      "type": "godot-csharp",
+      "request": "launch",
+      "project": "${workspaceFolder}/DungeonCrawler.csproj"
+    }
+  ]
+}

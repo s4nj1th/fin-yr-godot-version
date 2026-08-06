@@ -1,0 +1,28 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; but for simple editing tasks or CLI execution, this file can be modified.
+
+config_version=5
+
+[application]
+
+config/name="Closed-Loop LLM PCG Dungeon Crawler"
+config/description="Godot 4 C# Port for Closed-Loop LLM Procedural Content Generation Dungeon Crawler"
+run/main_scene="res://Main.tscn"
+config/features=PackedStringArray("4.3", "C#", "Forward+")
+
+[dotnet]
+
+project/assembly_name="DungeonCrawler"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/resizable=true
+window/stretch/mode="canvas_items"
+window/stretch/aspect="keep"
+
+[rendering]
+
+textures/canvas_textures/default_texture_filter=0
