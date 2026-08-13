@@ -16,8 +16,8 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 config/name="Closed-Loop LLM PCG Dungeon Crawler"
 config/description="Godot 4 C# Port for Closed-Loop LLM Procedural Content Generation Dungeon Crawler"
-run/main_scene="res://Main.tscn"
-config/features=PackedStringArray("4.7")
+run/main_scene="res://Scenes/MeleeAiTest.tscn"
+config/features=PackedStringArray("4.7", "C#")
 
 [display]
 

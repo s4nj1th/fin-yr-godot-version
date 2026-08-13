@@ -2,5 +2,5 @@
 
 [ext_resource type="Script" path="res://Scripts/Core/GameManager.cs" id="1_gamemanager"]
 
-[node name="Main" type="Node2D"]
+[node name="Main" type="Node3D"]
 script = ExtResource("1_gamemanager")

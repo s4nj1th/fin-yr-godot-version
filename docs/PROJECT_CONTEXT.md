@@ -1,157 +1,155 @@
-# Project Context & Architectural Documentation
+# Project Context (Current Playable State)
 
-**Project Name:** Closed-Loop LLM PCG Dungeon Crawler (Godot 4 C# Port)  
-**Engine:** Godot Engine 4.3 (Mono / C# Edition)  
-**Framework:** .NET 8.0 (`net8.0`)  
-**Architecture Pattern:** Component-based event-driven Node hierarchy with closed-loop backend REST integration.
+Project name: Closed-Loop LLM PCG Dungeon Crawler (Godot C#)
+Engine: Godot 4.3 Mono
+Framework: .NET 8.0
 
----
+This file reflects the current runtime setup used for gameplay and AI testing.
 
-## 1. Overview
+## 1. Current Focus
 
-This project is a 2D tile-based dungeon crawler built in Godot 4.3 using C#. It implements a **closed-loop Procedural Content Generation (PCG)** pipeline driven by an external Large Language Model (LLM) server.
+The active prototype is now a 3D top-down dungeon experience with:
 
-As the player navigates through levels, game telemetry (damage taken, time spent, exploration coverage, chests opened, traps triggered) is captured and sent to the backend. The LLM backend assesses player playstyle, updates narrative lore (narrative isomorphism), adapts level parameters (difficulty, enemy density, trap probability, visibility), and generates the next dungeon floor dynamically.
+1. Very large procedural maps.
+2. Shader-based fog-of-war with discovery memory.
+3. Capsule player and capsule enemies.
+4. Dedicated enemy AI sandbox scenes for behavior iteration.
 
----
+The main loop no longer depends on the older 2D-only renderer path for primary testing.
 
-## 2. System Architecture
+## 2. Active Main Scene and Core Runtime
 
-```text
-                               +-----------------------------+
-                               |   LLM Backend REST Server   |
-                               | (http://localhost:8080 or   |
-                               |    configured BaseUrl)      |
-                               +--------------+--------------+
-                                              ^
-                      /api/generate           |           /api/adapt
-                      (Map Request)           |      (Telemetry & Adapt)
-                                              v
-                               +--------------+--------------+
-                               |         ApiClient           |
-                               +--------------+--------------+
-                                              |
-                                              v
-+-----------------------------------------------------------------------------------+
-|                                 GameManager                                       |
-|                                                                                   |
-|  +-------------------+   +---------------------+   +---------------------------+  |
-|  |  DungeonRenderer  |   |  PlayerController   |   |     EnemyController(s)    |  |
-|  |                   |   |                     |   |                           |  |
-|  | - Tile grid rendering | - Grid position      | - Patrol / Ambush AI      |  |
-|  | - Fog-of-war LoS   |   | - Stats (HP, Score) | - Combat vs Player        |  |
-|  | - Exploration %   |   | - Movement & Input  | - Positional updates      |  |
-|  +-------------------+   +---------------------+   +---------------------------+  |
-|                                                                                   |
-|                                  +------------------+                             |
-|                                  |    HudManager    |                             |
-|                                  | - Realtime HUD   |                             |
-|                                  | - Adaptation UI  |                             |
-|                                  +------------------+                             |
-+-----------------------------------------------------------------------------------+
-```
+Main scene:
 
----
+1. [Main.tscn](../Main.tscn)
 
-## 3. Directory & Component Breakdown
+Main runtime script:
 
-### Core Subsystem (`Scripts/Core/`)
-* **[`GameManager.cs`](file:///Users/s4n/Documents/clg/sem7/project%20phase%202/fin-yr-godot-version/Scripts/Core/GameManager.cs)**
-  - Central orchestrator node attached to [`Main.tscn`](file:///Users/s4n/Documents/clg/sem7/project%20phase%202/fin-yr-godot-version/Main.tscn).
-  - Instantiates `ApiClient`, `DungeonRenderer`, `PlayerController`, and `HudManager`.
-  - Manages level state transitions, timer accumulation, entity spawning, and level restart on player death.
-  - Intercepts player exit events, computes metrics, packages `TelemetryRequest`, and triggers backend adaptation requests.
+1. [Scripts/Core/GameManager.cs](../Scripts/Core/GameManager.cs)
 
-* **[`DungeonRenderer.cs`](file:///Users/s4n/Documents/clg/sem7/project%20phase%202/fin-yr-godot-version/Scripts/Core/DungeonRenderer.cs)**
-  - Custom `Node2D` renderer performing 2D canvas drawing via `_Draw()`.
-  - Renders map grid based on `PaletteData` hex color codes.
-  - Implements line-of-sight Fog-of-War using circular distance checks (`UpdateVisibility()`).
-  - Tracks explored vs. unexplored walkable tiles to compute exact exploration percentages.
+Current GameManager responsibilities:
 
----
+1. Generates a large tile map from configurable settings.
+2. Builds a 3D top-down arena from primitive meshes.
+3. Handles player movement on a grid with normal axes.
+4. Spawns enemies and updates their AI each frame.
+5. Applies fog shader parameters and discovery updates.
+6. Supports full map regeneration with R key.
 
-### Data Models & Schemas (`Scripts/Data/`)
-* **[`DungeonData.cs`](file:///Users/s4n/Documents/clg/sem7/project%20phase%202/fin-yr-godot-version/Scripts/Data/DungeonData.cs)**
-  - Defines data contracts mapped with `System.Text.Json` attributes (`[JsonPropertyName(...)]`):
-    - `DungeonConfig`: Controls generation parameters (theme, layout style, corridor width, room/enemy density, trap probability, visibility).
-    - `PaletteData`: Hex strings for rendering tiles (background, wall, floor, corridor, door, trap, enemy, chest, start, exit, fog).
-    - `DungeonMapData`: Contains dimensions, seed, rooms, grid 2D array, start/exit points, and enemy spawn locations.
-    - `TelemetryMetrics` & `TelemetryRequest`: Payloads sent to `/api/adapt`.
-    - `LLMAdaptationResponse` & `NarrativeData`: Response payloads returned from backend adaptation.
+Important tuneables in DungeonGenerationSettings:
 
----
+1. MapWidth / MapHeight
+2. RoomAttempts
+3. Room min and max dimensions
+4. FogRevealRadius
+5. FogFeather
+6. FogOpacity and FogDiscoveredOpacity
 
-### Entity Controllers (`Scripts/Entities/`)
-* **[`PlayerController.cs`](file:///Users/s4n/Documents/clg/sem7/project%20phase%202/fin-yr-godot-version/Scripts/Entities/PlayerController.cs)**
-  - Tile-aligned 2D movement controller driven by directional input (WASD / Arrow keys).
-  - Tracks health, score, chests opened, traps triggered, and total damage taken.
-  - Triggers tile interactions (traps deal 15 damage; chests grant 25 score; exit finishes floor).
-  - Emits custom C# Godot signals for UI and game state management.
+## 3. Fog-of-War Model
 
-* **[`EnemyController.cs`](file:///Users/s4n/Documents/clg/sem7/project%20phase%202/fin-yr-godot-version/Scripts/Entities/EnemyController.cs)**
-  - Autonomous AI entity executing step-based movement every `0.5s`.
-  - Supports two behaviors:
-    - `"patrol"`: Moves in random valid tile directions.
-    - `"ambush"`: Detects player within 6.0 tile distance and aggressively pursues them.
-  - Attacks player for 10 damage when adjacent (distance $\le 1.5$ tiles).
+Fog behavior now has two states for non-visible regions:
 
----
+1. Undiscovered: hidden under stronger fog.
+2. Discovered: dimmed under lighter fog.
 
-### Network Subsystem (`Scripts/Network/`)
-* **[`ApiClient.cs`](file:///Users/s4n/Documents/clg/sem7/project%20phase%202/fin-yr-godot-version/Scripts/Network/ApiClient.cs)**
-  - HTTP REST client built on `System.Net.Http.HttpClient`.
-  - Exposes asynchronous API methods:
-    - `GenerateMapAsync(prompt, config)` $\rightarrow$ `POST /api/generate`
-    - `SendTelemetryAndAdaptAsync(request)` $\rightarrow$ `POST /api/adapt`
+Implementation notes:
 
----
+1. A discovery texture is maintained in memory and updated as player reveals tiles.
+2. Fog is rendered through a spatial shader overlay quad.
+3. Shader blends between undiscovered and discovered opacity from the discovery map.
 
-### UI Subsystem (`Scripts/UI/`)
-* **[`HudManager.cs`](file:///Users/s4n/Documents/clg/sem7/project%20phase%202/fin-yr-godot-version/Scripts/UI/HudManager.cs)**
-  - `CanvasLayer` based UI rendering:
-    - **Header HUD**: Current level, theme, HP bar, timer, and score.
-    - **Adaptation Modal**: Modal dialog displayed upon reaching exit showing LLM playstyle assessment, narrative lore title/text, optional player prompt input field, and continuation button.
+Primary code:
 
----
+1. [Scripts/Core/GameManager.cs](../Scripts/Core/GameManager.cs)
 
-## 4. Tile Encoding & Interaction Rules
+## 4. Enemy System (Current)
 
-| Tile ID | Name | Description | Interaction Effect |
-| :---: | :--- | :--- | :--- |
-| **0** | Wall | Impassable terrain | Blocks movement & line-of-sight |
-| **1** | Floor | Standard walkable floor | Normal movement |
-| **2** | Corridor | Connecting hallway tile | Normal movement |
-| **3** | Door | Room entry threshold | Normal movement |
-| **4** | Trap | Hidden hazard tile | Deals 15 damage, disappears upon trigger |
-| **5** | Enemy | Enemy spawn point | Spawns `EnemyController` |
-| **6** | Chest | Treasure container | Awards +25 score, cleared on pickup |
-| **7** | Start | Level entrance | Player spawn location |
-| **8** | Exit | Level exit portal | Triggers level end & telemetry submission |
+Primary enemy script:
 
----
+1. [Scripts/Entities/EnemyController.cs](../Scripts/Entities/EnemyController.cs)
 
-## 5. Event & Signal Architecture
+Current visual and debug model:
 
-```text
-PlayerController                       GameManager                        HudManager
-       |                                    |                                 |
-       |--- ExitReached ------------------->|                                 |
-       |--- PlayerDied -------------------->|                                 |
-       |--- StatsChanged ------------------>|--- UpdateStats() -------------->|
-       |                                    |                                 |
-       |                                    |--- ShowAdaptationModal() ------>|
-       |                                    |                                 |
-       |                                    |<-- AdaptivePromptSubmitted -----|
-```
+1. Enemy body is a capsule mesh.
+2. Enemy carries an 8x8 NN-style grid board behind it.
+3. Grid cells visualize local tile and target information.
 
----
+Current behavior types (AI differs, stats can remain identical in test scenes):
 
-## 6. Closed-Loop Telemetry Workflow
+1. melee_chaser
+2. melee_hit_run
+3. ranged_kite
+4. ranged_strafe
 
-1. **Map Loading:** `GameManager` sends initial prompt to `ApiClient.GenerateMapAsync()`.
-2. **Rendering & Spawning:** `DungeonRenderer` draws the tile grid and palette colors. Player spawns at `Start` point (`tile 7`); enemies spawn at `Enemy` positions (`tile 5`).
-3. **Gameplay & Fog-of-War:** Player moves turn-by-turn. `DungeonRenderer.UpdateVisibility()` reveals tiles within `VisionRadius` and marks them as explored.
-4. **Exit Trigger:** Stepping on `Exit` (`tile 8`) calculates telemetry:
-   $$\text{Exploration \%} = \frac{\text{Explored Walkable Tiles}}{\text{Total Walkable Tiles}} \times 100$$
-5. **Backend Adaptation:** Telemetry payload sent to `/api/adapt`. Response returns playstyle evaluation, adapted `DungeonConfig`, new `DungeonMapData`, and narrative text.
-6. **Modal Display & Progression:** `HudManager` displays narrative modal. Player can optionally type custom prompt feedback and click **Proceed**, starting the next level.
+Behavior design rule in this branch:
+
+1. AI changes movement and post-attack repositioning only.
+2. Stats such as HP, speed, attack, and reward can stay constant for controlled tests.
+
+## 5. Dedicated AI Test Scenes
+
+Two separate scenes exist for isolated behavior testing:
+
+1. [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn)
+2. [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn)
+
+Shared scene driver script:
+
+1. [Scripts/Core/EnemyAiTestScene.cs](../Scripts/Core/EnemyAiTestScene.cs)
+
+What each test scene contains:
+
+1. Player capsule with WASD movement.
+2. Two enemies in the selected category (melee or ranged).
+3. Same base stats for both enemies in that scene.
+4. Different AI behavior per enemy.
+5. Arena obstacles for pathing and attack-style visibility.
+
+## 6. Tile Semantics in Use
+
+Tile IDs are still aligned with project logic:
+
+1. 0 = Wall
+2. 1 = Floor
+3. 2 = Corridor
+4. 3 = Door
+5. 4 = Trap
+6. 5 = Enemy spawn
+7. 6 = Chest reward
+8. 7 = Start
+9. 8 = Exit
+
+Current visuals:
+
+1. Reward marker is a cube.
+2. Player and enemies are capsules.
+
+## 7. Known Legacy vs Active Paths
+
+Legacy scripts still exist for earlier 2D and backend flow work, but current vibe-coding work should prioritize:
+
+1. [Scripts/Core/GameManager.cs](../Scripts/Core/GameManager.cs)
+2. [Scripts/Entities/EnemyController.cs](../Scripts/Entities/EnemyController.cs)
+3. [Scripts/Core/EnemyAiTestScene.cs](../Scripts/Core/EnemyAiTestScene.cs)
+4. [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn)
+5. [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn)
+
+## 8. Quick Run Targets
+
+For AI behavior iteration:
+
+1. Run current scene with [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn)
+2. Run current scene with [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn)
+
+For main large-map dungeon loop:
+
+1. Run [Main.tscn](../Main.tscn)
+
+## 9. Next Recommended Extensions
+
+If continuing this branch, most aligned next steps are:
+
+1. Convert large map into streamed chunk generation for true infinite traversal.
+2. Persist discovered fog state per chunk.
+3. Add in-scene labels for AI type and current state machine phase.
+4. Add deterministic seed controls for reproducible AI tests.
