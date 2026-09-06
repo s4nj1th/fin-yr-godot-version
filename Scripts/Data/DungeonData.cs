@@ -78,9 +78,19 @@ public class EnemyStats
 	[JsonPropertyName("max_hp")] public int MaxHp { get; set; } = 20;
 	[JsonPropertyName("speed")] public float Speed { get; set; } = 1.0f;
 	[JsonPropertyName("attack")] public int Attack { get; set; } = 8;
+	[JsonPropertyName("defense")] public int Defense { get; set; } = 0;
 	[JsonPropertyName("vision_range")] public int VisionRange { get; set; } = 5;
 	[JsonPropertyName("attack_range")] public int AttackRange { get; set; } = 1;
 	[JsonPropertyName("reward")] public int Reward { get; set; } = 10;
+}
+
+public class PlayerStats
+{
+	[JsonPropertyName("max_hp")] public int MaxHp { get; set; } = 100;
+	[JsonPropertyName("attack")] public int Attack { get; set; } = 15;
+	[JsonPropertyName("defense")] public int Defense { get; set; } = 5;
+	[JsonPropertyName("move_speed")] public float MoveSpeed { get; set; } = 1.0f;
+	[JsonPropertyName("attack_range")] public int AttackRange { get; set; } = 1;
 }
 
 public class EnemyAiPixelGrid
