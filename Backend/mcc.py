@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 import config
 import genome as genome_lib
+import llm_mutation
 from surrogate import Surrogate
 
 
@@ -36,6 +37,10 @@ class MCCManager:
         self.pending: dict[str, dict[str, Any]] = {}
         self.auto_accepted_count = 0
         self.auto_rejected_count = 0
+        self.recent_outcomes: list[dict[str, Any]] = []
+        self.llm_mutations_used = 0
+        self.random_mutations_used = 0
+        self.llm_mutation_failures = 0
         self.surrogate = Surrogate(min_labels=config.SURROGATE_MIN_LABELS)
         self._load_state()
 
@@ -87,6 +92,9 @@ class MCCManager:
 
         self.surrogate.add_example(candidate["params"], passed)
 
+        self.recent_outcomes.append({"params": candidate["params"], "passed": passed, "fail_reason": reason})
+        self.recent_outcomes = self.recent_outcomes[-config.LLM_MUTATION_HISTORY_SIZE :]
+
         self._append_log(
             {
                 "event": "report_outcome",
@@ -98,6 +106,7 @@ class MCCManager:
                 "passed": passed,
                 "fail_reason": reason,
                 "decision_source": "human",
+                "mutation_source": candidate.get("mutation_source", "random"),
                 "hall_of_fame_size": len(self.hall_of_fame),
             }
         )
@@ -116,6 +125,11 @@ class MCCManager:
             "auto_accepted": self.auto_accepted_count,
             "auto_rejected": self.auto_rejected_count,
             "surrogate_ready": self.surrogate.is_ready(),
+            "llm_mutation_mode": config.LLM_MUTATION_MODE,
+            "llm_mutation_available": llm_mutation.is_available(),
+            "llm_mutations_used": self.llm_mutations_used,
+            "llm_mutation_failures": self.llm_mutation_failures,
+            "random_mutations_used": self.random_mutations_used,
         }
 
     # --- Candidate proposal / surrogate gating ------------------------------
@@ -123,8 +137,20 @@ class MCCManager:
     def _propose_candidate(self) -> dict[str, Any]:
         if not self.hall_of_fame:
             return genome_lib.make_default_genome()
+
         parent = random.choice(self.hall_of_fame)
-        return genome_lib.mutate(parent)
+
+        if llm_mutation.is_available():
+            llm_child = llm_mutation.propose_mutation(parent, self.recent_outcomes)
+            if llm_child is not None:
+                self.llm_mutations_used += 1
+                return llm_child
+            self.llm_mutation_failures += 1
+
+        child = genome_lib.mutate(parent)
+        child["mutation_source"] = "random"
+        self.random_mutations_used += 1
+        return child
 
     @staticmethod
     def _needs_real_evaluation(prob: float, std: float) -> bool:
@@ -154,6 +180,7 @@ class MCCManager:
                 "surrogate_prob": prob,
                 "surrogate_std": std,
                 "decision_source": "surrogate",
+                "mutation_source": candidate.get("mutation_source", "random"),
                 "hall_of_fame_size": len(self.hall_of_fame),
             }
         )
@@ -192,6 +219,10 @@ class MCCManager:
             self.pending = state.get("pending", {})
             self.auto_accepted_count = state.get("auto_accepted_count", 0)
             self.auto_rejected_count = state.get("auto_rejected_count", 0)
+            self.recent_outcomes = state.get("recent_outcomes", [])
+            self.llm_mutations_used = state.get("llm_mutations_used", 0)
+            self.random_mutations_used = state.get("random_mutations_used", 0)
+            self.llm_mutation_failures = state.get("llm_mutation_failures", 0)
             self.surrogate.load_state(state.get("surrogate", {}))
         except (json.JSONDecodeError, OSError):
             self.hall_of_fame = []
@@ -206,6 +237,10 @@ class MCCManager:
                     "pending": self.pending,
                     "auto_accepted_count": self.auto_accepted_count,
                     "auto_rejected_count": self.auto_rejected_count,
+                    "recent_outcomes": self.recent_outcomes,
+                    "llm_mutations_used": self.llm_mutations_used,
+                    "random_mutations_used": self.random_mutations_used,
+                    "llm_mutation_failures": self.llm_mutation_failures,
                     "surrogate": self.surrogate.state_dict(),
                 },
                 f,
