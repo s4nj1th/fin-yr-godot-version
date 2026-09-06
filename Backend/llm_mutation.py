@@ -28,9 +28,9 @@ import genome as genome_lib
 def is_available() -> bool:
     if config.LLM_MUTATION_MODE == "off":
         return False
-    if not config.LLM_API_KEY:
-        return False
-    return True
+    if config.LLM_PROVIDER == "local":
+        return True  # no API key needed; an unreachable Ollama server is handled per-call like any other failure
+    return bool(config.LLM_API_KEY)
 
 
 def _extract_json_object(text: str) -> Optional[dict[str, Any]]:
@@ -106,15 +106,18 @@ def _call_anthropic(prompt: str) -> str:
     return "".join(block.get("text", "") for block in data.get("content", []))
 
 
-def _call_openai(prompt: str) -> str:
+def _call_openai_compatible(base_url: str, model: str, prompt: str, api_key: str = "") -> str:
+    """Shared by OpenAI itself and any local OpenAI-compatible server (Ollama
+    included — `ollama serve` exposes /v1/chat/completions in this exact shape)."""
+    headers = {"content-type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {config.LLM_API_KEY}",
-            "content-type": "application/json",
-        },
+        f"{base_url}/v1/chat/completions",
+        headers=headers,
         json={
-            "model": config.LLM_MODEL_NAME or "gpt-4o-mini",
+            "model": model,
             "max_tokens": 512,
             "messages": [{"role": "user", "content": prompt}],
         },
@@ -123,6 +126,33 @@ def _call_openai(prompt: str) -> str:
     response.raise_for_status()
     data = response.json()
     return data["choices"][0]["message"]["content"]
+
+
+def _call_openai(prompt: str) -> str:
+    return _call_openai_compatible(
+        "https://api.openai.com", config.LLM_MODEL_NAME or "gpt-4o-mini", prompt, config.LLM_API_KEY
+    )
+
+
+def _call_local(prompt: str) -> str:
+    """Uses Ollama's native /api/chat rather than its OpenAI-compatible endpoint:
+    hybrid-reasoning models like Qwen3.5 default to a "thinking" pass that can
+    eat the whole token budget before producing any actual content, and
+    think=false (needed to disable that) is only honored on this endpoint."""
+    response = requests.post(
+        f"{config.LLM_LOCAL_BASE_URL}/api/chat",
+        headers={"content-type": "application/json"},
+        json={
+            "model": config.LLM_MODEL_NAME or "qwen3.5:4b",
+            "think": False,
+            "stream": False,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data["message"]["content"]
 
 
 def propose_mutation(parent: dict[str, Any], recent_outcomes: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -136,7 +166,12 @@ def propose_mutation(parent: dict[str, Any], recent_outcomes: list[dict[str, Any
     prompt = _build_prompt(parent["params"], recent_outcomes)
 
     try:
-        raw_text = _call_openai(prompt) if config.LLM_PROVIDER == "openai" else _call_anthropic(prompt)
+        if config.LLM_PROVIDER == "openai":
+            raw_text = _call_openai(prompt)
+        elif config.LLM_PROVIDER == "local":
+            raw_text = _call_local(prompt)
+        else:
+            raw_text = _call_anthropic(prompt)
     except Exception as exc:  # noqa: BLE001 - an untrusted external API call must never crash the coevolution loop
         print(f"[llm_mutation] LLM call failed, falling back to random mutation: {exc}")
         return None

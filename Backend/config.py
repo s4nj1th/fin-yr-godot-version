@@ -57,13 +57,15 @@ SURROGATE_MAX_PROPOSAL_ATTEMPTS = 25  # safety cap so a saturated surrogate can'
 #   "on"              -> always attempt the LLM; falls back to random per-call on failure
 #   "off"             -> never use the LLM, even if a key is configured (the ablation control)
 LLM_MUTATION_MODE = os.getenv("LLM_MUTATION_MODE", "auto").lower()
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()  # "anthropic" | "openai"
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()  # "anthropic" | "openai" | "local"
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "")  # blank -> provider-specific default below
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 if LLM_API_KEY == "your_api_key_here":  # the literal placeholder from .env.example — treat as "not set"
     LLM_API_KEY = ""
+# "local" -> an Ollama (or any OpenAI-compatible) server, no API key needed.
+LLM_LOCAL_BASE_URL = os.getenv("LLM_LOCAL_BASE_URL", "http://localhost:11434")
 LLM_MUTATION_HISTORY_SIZE = 10  # how many recent outcomes to show the LLM as context
-LLM_REQUEST_TIMEOUT_SECONDS = 15
+LLM_REQUEST_TIMEOUT_SECONDS = 30  # local inference on a laptop GPU is slower than a hosted API
 
 DATA_DIR = "data"
 STATE_FILE = f"{DATA_DIR}/mcc_state.json"
