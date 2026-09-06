@@ -1,9 +1,20 @@
 """
-Phase-1 naive human-coupled Minimal Criterion Coevolution manager.
+Human-coupled Minimal Criterion Coevolution manager.
 
-Every candidate is evaluated by a real playthrough (no surrogate yet — that's
-Phase 2). This module owns: issuing candidates, evaluating the minimal
-criterion against reported telemetry, and persisting the Hall of Fame.
+Phase 1: every candidate is evaluated by a real playthrough.
+Phase 2 (this version): before handing a candidate to the player, check the
+online surrogate. If it's confident (predicted pass probability far from the
+decision boundary, low variance), auto-decide the candidate without spending
+a real playthrough — accept it straight into the Hall of Fame if the
+surrogate predicts pass, discard it if it predicts fail. Only a candidate the
+surrogate is genuinely unsure about gets handed to the player. This is the
+mechanism (Idea.md section 5.5, the "infill criterion") that makes
+human-coupled MCC computationally tractable at all.
+
+Only real, human-verified outcomes (from report_outcome) are used to train
+the surrogate — auto-decided candidates are never fed back into it, since
+training a model on its own predictions would let calibration error
+compound instead of being checked against ground truth.
 """
 
 from __future__ import annotations
@@ -14,33 +25,54 @@ import random
 import time
 from typing import Any, Optional
 
+import config
 import genome as genome_lib
-from config import MAX_DEATHS_ALLOWED, MAX_TRIAL_SECONDS, MIN_TRIAL_SECONDS, SESSION_LOG_FILE, STATE_FILE
+from surrogate import Surrogate
 
 
 class MCCManager:
     def __init__(self) -> None:
         self.hall_of_fame: list[dict[str, Any]] = []
         self.pending: dict[str, dict[str, Any]] = {}
+        self.auto_accepted_count = 0
+        self.auto_rejected_count = 0
+        self.surrogate = Surrogate(min_labels=config.SURROGATE_MIN_LABELS)
         self._load_state()
 
     # --- Public API -----------------------------------------------------
 
-    def get_next_candidate(self) -> dict[str, Any]:
-        if not self.hall_of_fame:
-            candidate = genome_lib.make_default_genome()
-        else:
-            parent = random.choice(self.hall_of_fame)
-            candidate = genome_lib.mutate(parent)
+    def get_next_candidate(self) -> tuple[dict[str, Any], Optional[dict[str, float]]]:
+        """Returns (candidate, surrogate_estimate). surrogate_estimate is None
+        when the surrogate isn't trained yet or wasn't consulted."""
+        for _ in range(config.SURROGATE_MAX_PROPOSAL_ATTEMPTS):
+            candidate = self._propose_candidate()
 
+            if not self.surrogate.is_ready():
+                self.pending[candidate["id"]] = candidate
+                self._save_state()
+                return candidate, None
+
+            prob, std = self.surrogate.predict(candidate["params"])
+            if self._needs_real_evaluation(prob, std):
+                self.pending[candidate["id"]] = candidate
+                self._save_state()
+                return candidate, {"prob": prob, "std": std}
+
+            # Surrogate is confident — resolve this one for free and try again,
+            # so the archive keeps growing without spending the player's time.
+            self._auto_decide(candidate, prob, std)
+
+        # Exhausted attempts without finding an uncertain candidate (surrogate
+        # saturated/very confident everywhere) — force a real evaluation anyway
+        # so the player always gets a genome and the loop can't stall forever.
+        candidate = self._propose_candidate()
         self.pending[candidate["id"]] = candidate
         self._save_state()
-        return candidate
+        return candidate, None
 
     def report_outcome(self, genome_id: str, telemetry: dict[str, Any]) -> tuple[bool, Optional[str]]:
         candidate = self.pending.pop(genome_id, None)
         if candidate is None:
-            # Unknown/expired id (e.g. server restarted mid-session) — log and reject gracefully.
             self._append_log({"event": "unknown_genome_id", "genome_id": genome_id, "telemetry": telemetry})
             self._save_state()
             return False, "unknown_genome_id"
@@ -50,7 +82,10 @@ class MCCManager:
         if passed:
             candidate["accepted_at"] = time.time()
             candidate["telemetry"] = telemetry
+            candidate["decision_source"] = "human"
             self.hall_of_fame.append(candidate)
+
+        self.surrogate.add_example(candidate["params"], passed)
 
         self._append_log(
             {
@@ -62,6 +97,7 @@ class MCCManager:
                 "telemetry": telemetry,
                 "passed": passed,
                 "fail_reason": reason,
+                "decision_source": "human",
                 "hall_of_fame_size": len(self.hall_of_fame),
             }
         )
@@ -71,6 +107,56 @@ class MCCManager:
     @property
     def hall_of_fame_size(self) -> int:
         return len(self.hall_of_fame)
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        return {
+            "hall_of_fame_size": len(self.hall_of_fame),
+            "human_evaluations": len(self.surrogate.y_train),
+            "auto_accepted": self.auto_accepted_count,
+            "auto_rejected": self.auto_rejected_count,
+            "surrogate_ready": self.surrogate.is_ready(),
+        }
+
+    # --- Candidate proposal / surrogate gating ------------------------------
+
+    def _propose_candidate(self) -> dict[str, Any]:
+        if not self.hall_of_fame:
+            return genome_lib.make_default_genome()
+        parent = random.choice(self.hall_of_fame)
+        return genome_lib.mutate(parent)
+
+    @staticmethod
+    def _needs_real_evaluation(prob: float, std: float) -> bool:
+        lo, hi = config.SURROGATE_UNCERTAINTY_BAND
+        return (lo < prob < hi) or (std > config.SURROGATE_STD_THRESHOLD)
+
+    def _auto_decide(self, candidate: dict[str, Any], prob: float, std: float) -> None:
+        passed = prob >= 0.5
+        candidate["decision_source"] = "surrogate"
+        candidate["surrogate_estimate"] = {"prob": prob, "std": std}
+
+        if passed:
+            candidate["accepted_at"] = time.time()
+            self.hall_of_fame.append(candidate)
+            self.auto_accepted_count += 1
+        else:
+            self.auto_rejected_count += 1
+
+        self._append_log(
+            {
+                "event": "auto_decide",
+                "timestamp": time.time(),
+                "genome_id": candidate["id"],
+                "generation": candidate["generation"],
+                "params": candidate["params"],
+                "passed": passed,
+                "surrogate_prob": prob,
+                "surrogate_std": std,
+                "decision_source": "surrogate",
+                "hall_of_fame_size": len(self.hall_of_fame),
+            }
+        )
 
     # --- Minimal criterion ------------------------------------------------
 
@@ -83,12 +169,12 @@ class MCCManager:
             return False, "quit_early"
 
         time_taken = telemetry.get("time_taken_sec", 0.0)
-        if time_taken < MIN_TRIAL_SECONDS:
+        if time_taken < config.MIN_TRIAL_SECONDS:
             return False, "too_fast_trivial"
-        if time_taken > MAX_TRIAL_SECONDS:
+        if time_taken > config.MAX_TRIAL_SECONDS:
             return False, "too_slow_abandoned"
 
-        if telemetry.get("deaths_retries", 0) > MAX_DEATHS_ALLOWED:
+        if telemetry.get("deaths_retries", 0) > config.MAX_DEATHS_ALLOWED:
             return False, "too_many_deaths"
 
         return True, None
@@ -96,26 +182,38 @@ class MCCManager:
     # --- Persistence -------------------------------------------------------
 
     def _load_state(self) -> None:
-        if not os.path.exists(STATE_FILE):
+        if not os.path.exists(config.STATE_FILE):
             return
 
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
+            with open(config.STATE_FILE, "r", encoding="utf-8") as f:
                 state = json.load(f)
             self.hall_of_fame = state.get("hall_of_fame", [])
             self.pending = state.get("pending", {})
+            self.auto_accepted_count = state.get("auto_accepted_count", 0)
+            self.auto_rejected_count = state.get("auto_rejected_count", 0)
+            self.surrogate.load_state(state.get("surrogate", {}))
         except (json.JSONDecodeError, OSError):
-            # Corrupt/partial state file — start fresh rather than crash the server.
             self.hall_of_fame = []
             self.pending = {}
 
     def _save_state(self) -> None:
-        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"hall_of_fame": self.hall_of_fame, "pending": self.pending}, f, indent=2)
+        os.makedirs(os.path.dirname(config.STATE_FILE), exist_ok=True)
+        with open(config.STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "hall_of_fame": self.hall_of_fame,
+                    "pending": self.pending,
+                    "auto_accepted_count": self.auto_accepted_count,
+                    "auto_rejected_count": self.auto_rejected_count,
+                    "surrogate": self.surrogate.state_dict(),
+                },
+                f,
+                indent=2,
+            )
 
     @staticmethod
     def _append_log(record: dict[str, Any]) -> None:
-        os.makedirs(os.path.dirname(SESSION_LOG_FILE), exist_ok=True)
-        with open(SESSION_LOG_FILE, "a", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(config.SESSION_LOG_FILE), exist_ok=True)
+        with open(config.SESSION_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")

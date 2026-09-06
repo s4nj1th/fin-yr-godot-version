@@ -24,10 +24,18 @@ def health() -> dict:
     return {"status": "ok", "hall_of_fame_size": manager.hall_of_fame_size}
 
 
+@app.get("/api/stats")
+def stats() -> dict:
+    """Reconstructs the section-6 efficiency metric on demand: how many real
+    playthroughs were spent per accepted genome vs. how many the surrogate
+    resolved for free."""
+    return manager.stats
+
+
 @app.post("/api/next_candidate", response_model=NextCandidateResponse)
 def next_candidate() -> NextCandidateResponse:
-    candidate = manager.get_next_candidate()
-    return NextCandidateResponse(genome_id=candidate["id"], genome=candidate)
+    candidate, surrogate_estimate = manager.get_next_candidate()
+    return NextCandidateResponse(genome_id=candidate["id"], genome=candidate, surrogate_estimate=surrogate_estimate)
 
 
 @app.post("/api/report_outcome", response_model=ReportOutcomeResponse)
