@@ -190,12 +190,29 @@ public partial class GameManager : Node3D
 		}
 	}
 
+	// async void is required here, not a style slip: these are entry points
+	// called from Godot's synchronous _Ready/_Process lifecycle callbacks
+	// (which can't be awaited), so there is no caller able to observe a
+	// returned Task. The try/catch is the safety net that pattern needs —
+	// an unhandled exception in an async void method would otherwise crash
+	// the process instead of surfacing through the log like every other
+	// backend-call failure in this file.
 	private async void RequestNextGenomeAndRegenerateAsync()
 	{
 		_isFetchingGenome = true;
-		await RequestNextGenomeAsync();
-		RegenerateDungeon();
-		_isFetchingGenome = false;
+		try
+		{
+			await RequestNextGenomeAsync();
+			RegenerateDungeon();
+		}
+		catch (Exception ex)
+		{
+			GD.PrintErr($"[GameManager] Unexpected error fetching initial genome: {ex.Message}");
+		}
+		finally
+		{
+			_isFetchingGenome = false;
+		}
 	}
 
 	private async void EndTrialAndAdvanceAsync(bool exitReached, bool quitEarly)
@@ -208,42 +225,52 @@ public partial class GameManager : Node3D
 		_trialReported = true;
 		_isFetchingGenome = true;
 
-		var telemetry = new TelemetryMetrics
+		try
 		{
-			TimeTakenSec = (float)_trialElapsedSeconds,
-			DamageTaken = _trialDamageTaken,
-			HealthRemaining = _playerCurrentHp,
-			DeathsRetries = _trialDeaths,
-			EnemiesKilled = _trialEnemiesKilled,
-			TotalEnemies = _enemies.Count + _trialEnemiesKilled,
-			ChestsOpened = _trialChestsOpened,
-			TotalChests = _trialTotalChests,
-			TrapsTriggered = _trialTrapsTriggered,
-			ExplorationPercent = ComputeExplorationPercent(),
-			ExitReached = exitReached,
-			QuitEarly = quitEarly
-		};
-
-		if (_backendAvailable && !string.IsNullOrEmpty(_currentGenomeId))
-		{
-			ReportOutcomeResponse? result = await _apiClient.ReportOutcomeAsync(new ReportOutcomeRequest
+			var telemetry = new TelemetryMetrics
 			{
-				GenomeId = _currentGenomeId,
-				Telemetry = telemetry
-			});
+				TimeTakenSec = (float)_trialElapsedSeconds,
+				DamageTaken = _trialDamageTaken,
+				HealthRemaining = _playerCurrentHp,
+				DeathsRetries = _trialDeaths,
+				EnemiesKilled = _trialEnemiesKilled,
+				TotalEnemies = _enemies.Count + _trialEnemiesKilled,
+				ChestsOpened = _trialChestsOpened,
+				TotalChests = _trialTotalChests,
+				TrapsTriggered = _trialTrapsTriggered,
+				ExplorationPercent = ComputeExplorationPercent(),
+				ExitReached = exitReached,
+				QuitEarly = quitEarly
+			};
 
-			LastTrialResultMessage = result != null
-				? (result.Passed ? $"GENOME ACCEPTED — HALL OF FAME: {result.HallOfFameSize}" : $"GENOME REJECTED ({result.FailReason})")
-				: "BACKEND UNREACHABLE — RESULT NOT RECORDED";
+			if (_backendAvailable && !string.IsNullOrEmpty(_currentGenomeId))
+			{
+				ReportOutcomeResponse? result = await _apiClient.ReportOutcomeAsync(new ReportOutcomeRequest
+				{
+					GenomeId = _currentGenomeId,
+					Telemetry = telemetry
+				});
+
+				LastTrialResultMessage = result != null
+					? (result.Passed ? $"GENOME ACCEPTED — HALL OF FAME: {result.HallOfFameSize}" : $"GENOME REJECTED ({result.FailReason})")
+					: "BACKEND UNREACHABLE — RESULT NOT RECORDED";
+			}
+			else
+			{
+				LastTrialResultMessage = "LOCAL MODE — BACKEND OFFLINE";
+			}
+
+			await RequestNextGenomeAsync();
+			RegenerateDungeon();
 		}
-		else
+		catch (Exception ex)
 		{
-			LastTrialResultMessage = "LOCAL MODE — BACKEND OFFLINE";
+			GD.PrintErr($"[GameManager] Unexpected error ending trial: {ex.Message}");
 		}
-
-		await RequestNextGenomeAsync();
-		RegenerateDungeon();
-		_isFetchingGenome = false;
+		finally
+		{
+			_isFetchingGenome = false;
+		}
 	}
 
 	private float ComputeExplorationPercent()

@@ -220,10 +220,17 @@ public class GenomeData
 	}
 }
 
+public class SurrogateEstimate
+{
+	[JsonPropertyName("prob")] public float Prob { get; set; }
+	[JsonPropertyName("std")] public float Std { get; set; }
+}
+
 public class NextCandidateResponse
 {
 	[JsonPropertyName("genome_id")] public string GenomeId { get; set; } = "";
 	[JsonPropertyName("genome")] public GenomeData Genome { get; set; } = new();
+	[JsonPropertyName("surrogate_estimate")] public SurrogateEstimate? SurrogateEstimate { get; set; }
 }
 
 public class ReportOutcomeRequest
