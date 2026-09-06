@@ -30,22 +30,31 @@ public partial class GameManager : Node3D
 	private readonly List<EnemyController> _enemies = new();
 	private readonly List<(int X, int Y, int W, int H)> _rooms = new();
 	private readonly List<MeshInstance3D> _tileMeshes = new();
+	// Tile IDs: 0 wall, 1 floor, 2 corridor, 3 door (unused by generation yet),
+	// 4 trap (drains HP), 5 enemy spawn marker (no effect), 6 chest (one-time score),
+	// 7 start, 8 exit, 9 heal (restores HP). Colors are deliberately spread across
+	// distinct hues — 4/5 and 7/9 used to share near-identical reds/greens, which
+	// made trap-vs-spawn and heal-vs-start indistinguishable at a glance.
 	private readonly Dictionary<int, Color> _tileColors = new()
 	{
 		{ 0, Color.FromHtml("#111422") },
 		{ 1, Color.FromHtml("#1e2436") },
 		{ 2, Color.FromHtml("#181d2e") },
 		{ 3, Color.FromHtml("#8b5cf6") },
-		{ 4, Color.FromHtml("#ef4444") },
-		{ 5, Color.FromHtml("#f43f5e") },
+		{ 4, Color.FromHtml("#dc2626") },
+		{ 5, Color.FromHtml("#a855f7") },
 		{ 6, Color.FromHtml("#f59e0b") },
-		{ 7, Color.FromHtml("#10b981") },
+		{ 7, Color.FromHtml("#38bdf8") },
 		{ 8, Color.FromHtml("#06b6d4") },
-		{ 9, Color.FromHtml("#050609") }
+		{ 9, Color.FromHtml("#22c55e") }
 	};
+
+	private const double TrapDamagePerSecond = 12.0;
+	private const double HealPerSecond = 10.0;
 
 	private int[,] _tiles = null!;
 	private bool[,] _discoveredTiles = null!;
+	private bool[,] _chestClaimed = null!;
 	private Image _discoveryImage = null!;
 	private ImageTexture _discoveryTexture = null!;
 	private int _mapWidth;
@@ -55,6 +64,7 @@ public partial class GameManager : Node3D
 	private Node3D _levelRoot = null!;
 	private Node3D _enemyRoot = null!;
 	private Node3D _markerRoot = null!;
+	private readonly Dictionary<Vector2I, MeshInstance3D> _markersByPos = new();
 	private MeshInstance3D _playerMesh = null!;
 	private MeshInstance3D _fogOverlay = null!;
 	private ShaderMaterial _fogMaterial = null!;
@@ -64,6 +74,25 @@ public partial class GameManager : Node3D
 	private double _moveTimer;
 	private int _score;
 	private bool _rewardCollected;
+	private double _tileEffectAccumulator;
+	private int _lastStandingTileType = -1;
+
+	private readonly PlayerStats _playerStats = new()
+	{
+		MaxHp = 100,
+		Attack = 15,
+		Defense = 5,
+		MoveSpeed = 1.0f,
+		AttackRange = 1
+	};
+	private int _playerCurrentHp;
+	private double _attackCooldownTimer;
+	private bool _attackKeyWasDown;
+	private const double AttackCooldown = 0.35;
+
+	public int PlayerCurrentHp => _playerCurrentHp;
+	public int PlayerMaxHp => _playerStats.MaxHp;
+	public int Score => _score;
 
 	public override void _Ready()
 	{
@@ -79,18 +108,23 @@ public partial class GameManager : Node3D
 		}
 
 		HandlePlayerInput(delta);
+		HandlePlayerAttack(delta);
+		HandleStandingTileEffects(delta);
 		UpdateTileVisibility();
 		UpdateCameraPosition();
 
-		foreach (EnemyController enemy in _enemies)
+		for (int i = _enemies.Count - 1; i >= 0; i--)
 		{
-			enemy.Tick(delta, _playerPos, _tiles);
-			if (_playerPos == enemy.GridPos)
+			EnemyController enemy = _enemies[i];
+
+			if (enemy.CurrentHp <= 0)
 			{
-				_score = Mathf.Max(0, _score - 5);
-				_playerPos = _startPos;
-				SetPlayerWorldPosition();
+				// Already dying — EnemyController plays its own death animation and frees itself.
+				_enemies.RemoveAt(i);
+				continue;
 			}
+
+			enemy.Tick(delta, _playerPos, _tiles);
 		}
 	}
 
@@ -100,6 +134,10 @@ public partial class GameManager : Node3D
 		_mapHeight = Mathf.Max(40, _generationSettings.MapHeight);
 		_tiles = new int[_mapHeight, _mapWidth];
 		_discoveredTiles = new bool[_mapHeight, _mapWidth];
+		_chestClaimed = new bool[_mapHeight, _mapWidth];
+		_markersByPos.Clear();
+		_tileEffectAccumulator = 0.0;
+		_lastStandingTileType = -1;
 		_discoveryImage = Image.CreateEmpty(_mapWidth, _mapHeight, false, Image.Format.Rgba8);
 		_discoveryImage.Fill(new Color(0, 0, 0, 1));
 		_discoveryTexture = ImageTexture.CreateFromImage(_discoveryImage);
@@ -141,6 +179,9 @@ public partial class GameManager : Node3D
 		_tileMeshes.Clear();
 		_enemies.Clear();
 		_rooms.Clear();
+
+		_playerCurrentHp = _playerStats.MaxHp;
+		_attackCooldownTimer = 0.0;
 
 		GenerateDungeon();
 		BuildLevel();
@@ -285,6 +326,7 @@ public partial class GameManager : Node3D
 	{
 		var trapPositions = new List<Vector2I>();
 		var chestPositions = new List<Vector2I>();
+		var healPositions = new List<Vector2I>();
 		var enemyPositions = new List<Vector2I>();
 
 		for (int i = 1; i < _rooms.Count; i++)
@@ -292,17 +334,20 @@ public partial class GameManager : Node3D
 			var room = _rooms[i];
 			var center = new Vector2I(room.X + room.W / 2, room.Y + room.H / 2);
 
-			if (i % 3 == 0)
+			switch (i % 4)
 			{
-				trapPositions.Add(center);
-			}
-			else if (i % 2 == 0)
-			{
-				chestPositions.Add(center);
-			}
-			else
-			{
-				enemyPositions.Add(center);
+				case 0:
+					trapPositions.Add(center);
+					break;
+				case 1:
+					chestPositions.Add(center);
+					break;
+				case 2:
+					healPositions.Add(center);
+					break;
+				default:
+					enemyPositions.Add(center);
+					break;
 			}
 		}
 
@@ -321,6 +366,15 @@ public partial class GameManager : Node3D
 			if (_tiles[pos.Y, pos.X] == 1 || _tiles[pos.Y, pos.X] == 2)
 			{
 				_tiles[pos.Y, pos.X] = 6;
+			}
+		}
+
+		for (int i = 0; i < healPositions.Count; i++)
+		{
+			var pos = healPositions[i];
+			if (_tiles[pos.Y, pos.X] == 1 || _tiles[pos.Y, pos.X] == 2)
+			{
+				_tiles[pos.Y, pos.X] = 9;
 			}
 		}
 
@@ -392,13 +446,14 @@ public partial class GameManager : Node3D
 		_markerRoot?.QueueFree();
 		_markerRoot = new Node3D();
 		AddChild(_markerRoot);
+		_markersByPos.Clear();
 
 		for (int y = 0; y < _mapHeight; y++)
 		{
 			for (int x = 0; x < _mapWidth; x++)
 			{
 				int tileType = _tiles[y, x];
-				if (tileType is not (4 or 6 or 7 or 8))
+				if (tileType is not (4 or 6 or 7 or 8 or 9))
 				{
 					continue;
 				}
@@ -411,19 +466,13 @@ public partial class GameManager : Node3D
 					Position = GridToWorld(new Vector2I(x, y)) + new Vector3(0, tileType == 6 ? 0.68f : 0.52f, 0),
 					MaterialOverride = new StandardMaterial3D
 					{
-						AlbedoColor = tileType switch
-						{
-							4 => Color.FromHtml("#ef4444"),
-							6 => Color.FromHtml("#f59e0b"),
-							7 => Color.FromHtml("#10b981"),
-							8 => Color.FromHtml("#06b6d4"),
-							_ => Color.FromHtml("#ffffff")
-						},
+						AlbedoColor = _tileColors.GetValueOrDefault(tileType, Colors.White),
 						Metallic = 0.0f,
 						Roughness = 0.4f
 					}
 				};
 				_markerRoot.AddChild(marker);
+				_markersByPos[new Vector2I(x, y)] = marker;
 			}
 		}
 	}
@@ -616,9 +665,9 @@ void fragment() {
 
 		var definitions = new[]
 		{
-			EnemyClassDefinition.Create("scout", "Scout", "patrol", new EnemyStats { MaxHp = 18, Speed = 1.3f, Attack = 8, VisionRange = 5, AttackRange = 1, Reward = 12 }),
-			EnemyClassDefinition.Create("brute", "Brute", "ambush", new EnemyStats { MaxHp = 28, Speed = 0.9f, Attack = 12, VisionRange = 6, AttackRange = 1, Reward = 18 }),
-			EnemyClassDefinition.Create("guardian", "Guardian", "patrol", new EnemyStats { MaxHp = 24, Speed = 0.8f, Attack = 10, VisionRange = 4, AttackRange = 2, Reward = 15 })
+			EnemyClassDefinition.Create("scout", "Scout", "patrol", new EnemyStats { MaxHp = 18, Speed = 1.3f, Attack = 8, Defense = 1, VisionRange = 5, AttackRange = 1, Reward = 12 }),
+			EnemyClassDefinition.Create("brute", "Brute", "ambush", new EnemyStats { MaxHp = 28, Speed = 0.9f, Attack = 12, Defense = 4, VisionRange = 6, AttackRange = 1, Reward = 18 }),
+			EnemyClassDefinition.Create("guardian", "Guardian", "patrol", new EnemyStats { MaxHp = 24, Speed = 0.8f, Attack = 10, Defense = 6, VisionRange = 4, AttackRange = 2, Reward = 15 })
 		};
 
 		var spawnPoints = new List<Vector2I>();
@@ -640,6 +689,7 @@ void fragment() {
 			enemy.WorldOffset = worldOffset;
 			enemy.Initialize(spawnPoints[i], definitions[i % definitions.Length].Behavior, definitions[i % definitions.Length]);
 			enemy.Position = GridToWorld(spawnPoints[i]) + new Vector3(0, 0.4f, 0);
+			enemy.EnemyAttackedPlayer += OnEnemyAttackedPlayer;
 			_enemyRoot.AddChild(enemy);
 			_enemies.Add(enemy);
 		}
@@ -648,7 +698,8 @@ void fragment() {
 	private void HandlePlayerInput(double delta)
 	{
 		_moveTimer += delta;
-		if (_moveTimer < 0.18)
+		float stepDelay = Mathf.Max(0.05f, 0.18f / Mathf.Max(_playerStats.MoveSpeed, 0.1f));
+		if (_moveTimer < stepDelay)
 		{
 			return;
 		}
@@ -671,6 +722,109 @@ void fragment() {
 		_moveTimer = 0;
 	}
 
+	private void HandlePlayerAttack(double delta)
+	{
+		_attackCooldownTimer = Math.Max(0.0, _attackCooldownTimer - delta);
+
+		bool attackKeyDown = Input.IsKeyPressed(Key.Space);
+		if (attackKeyDown && !_attackKeyWasDown && _attackCooldownTimer <= 0.0)
+		{
+			TryAttackNearestEnemy();
+			_attackCooldownTimer = AttackCooldown;
+		}
+
+		_attackKeyWasDown = attackKeyDown;
+	}
+
+	private void TryAttackNearestEnemy()
+	{
+		EnemyController? target = null;
+		int bestDistance = int.MaxValue;
+
+		foreach (EnemyController enemy in _enemies)
+		{
+			if (enemy.CurrentHp <= 0)
+			{
+				continue;
+			}
+
+			int distance = Math.Abs(enemy.GridPos.X - _playerPos.X) + Math.Abs(enemy.GridPos.Y - _playerPos.Y);
+			if (distance <= _playerStats.AttackRange && distance < bestDistance)
+			{
+				bestDistance = distance;
+				target = enemy;
+			}
+		}
+
+		if (target == null)
+		{
+			return;
+		}
+
+		PlayPlayerAttackFx(target.Position);
+
+		int damage = Math.Max(1, _playerStats.Attack - target.Stats.Defense);
+		target.TakeDamage(damage);
+
+		if (target.CurrentHp <= 0)
+		{
+			_score += target.Stats.Reward;
+		}
+	}
+
+	private void PlayPlayerAttackFx(Vector3 targetWorldPos)
+	{
+		Tween punchTween = CreateTween();
+		punchTween.TweenProperty(_playerMesh, "scale", new Vector3(1.3f, 0.8f, 1.3f), 0.06).SetTrans(Tween.TransitionType.Sine);
+		punchTween.TweenProperty(_playerMesh, "scale", Vector3.One, 0.12).SetTrans(Tween.TransitionType.Sine);
+
+		Vector3 origin = _playerMesh.Position;
+		Vector3 toTarget = targetWorldPos - origin;
+		toTarget.Y = 0;
+		float length = Mathf.Max(toTarget.Length(), 0.2f);
+		Vector3 midpoint = origin + (toTarget.Normalized() * (length * 0.5f)) + new Vector3(0, 0.5f, 0);
+		float angle = Mathf.Atan2(toTarget.X, toTarget.Z);
+
+		var slashMaterial = new StandardMaterial3D
+		{
+			AlbedoColor = Color.FromHtml("#e0f2fe"),
+			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+			Transparency = BaseMaterial3D.TransparencyEnum.Alpha
+		};
+
+		var slash = new MeshInstance3D
+		{
+			Mesh = new BoxMesh { Size = new Vector3(0.12f, 0.08f, length * 0.8f) },
+			MaterialOverride = slashMaterial,
+			Position = midpoint,
+			RotationDegrees = new Vector3(0, Mathf.RadToDeg(angle), 0)
+		};
+		AddChild(slash);
+
+		Tween slashTween = CreateTween();
+		slashTween.TweenProperty(slashMaterial, "albedo_color:a", 0.0f, 0.15).SetDelay(0.03);
+		slashTween.TweenCallback(Callable.From(slash.QueueFree));
+	}
+
+	private void OnEnemyAttackedPlayer(int rawDamage)
+	{
+		int mitigated = Math.Max(1, rawDamage - _playerStats.Defense);
+		_playerCurrentHp = Math.Max(0, _playerCurrentHp - mitigated);
+
+		if (_playerCurrentHp <= 0)
+		{
+			HandlePlayerDeath();
+		}
+	}
+
+	private void HandlePlayerDeath()
+	{
+		_score = Mathf.Max(0, _score - 20);
+		_playerPos = _startPos;
+		SetPlayerWorldPosition();
+		_playerCurrentHp = _playerStats.MaxHp;
+	}
+
 	private Vector2I GetMovementDirection()
 	{
 		bool right = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
@@ -691,18 +845,68 @@ void fragment() {
 		int tileType = _tiles[_playerPos.Y, _playerPos.X];
 		switch (tileType)
 		{
-			case 4:
-				_tiles[_playerPos.Y, _playerPos.X] = 1;
-				_score = Mathf.Max(0, _score - 5);
-				break;
 			case 6:
-				_tiles[_playerPos.Y, _playerPos.X] = 1;
-				_score += 25;
-				_rewardCollected = true;
+				if (!_chestClaimed[_playerPos.Y, _playerPos.X])
+				{
+					_chestClaimed[_playerPos.Y, _playerPos.X] = true;
+					_score += 25;
+					_rewardCollected = true;
+					LightenTile(_playerPos, 0.55f);
+				}
 				break;
 			case 8:
 				_score += 50;
 				break;
+		}
+	}
+
+	private void HandleStandingTileEffects(double delta)
+	{
+		int tileType = _tiles[_playerPos.Y, _playerPos.X];
+		if (tileType != _lastStandingTileType)
+		{
+			_tileEffectAccumulator = 0.0;
+			_lastStandingTileType = tileType;
+		}
+
+		if (tileType == 4)
+		{
+			_tileEffectAccumulator += TrapDamagePerSecond * delta;
+			if (_tileEffectAccumulator >= 1.0)
+			{
+				int whole = (int)_tileEffectAccumulator;
+				_tileEffectAccumulator -= whole;
+				_playerCurrentHp = Math.Max(0, _playerCurrentHp - whole);
+
+				if (_playerCurrentHp <= 0)
+				{
+					HandlePlayerDeath();
+				}
+			}
+		}
+		else if (tileType == 9)
+		{
+			_tileEffectAccumulator += HealPerSecond * delta;
+			if (_tileEffectAccumulator >= 1.0)
+			{
+				int whole = (int)_tileEffectAccumulator;
+				_tileEffectAccumulator -= whole;
+				_playerCurrentHp = Math.Min(_playerStats.MaxHp, _playerCurrentHp + whole);
+			}
+		}
+	}
+
+	private void LightenTile(Vector2I pos, float amount)
+	{
+		int index = (pos.Y * _mapWidth) + pos.X;
+		if (index >= 0 && index < _tileMeshes.Count && _tileMeshes[index].MaterialOverride is StandardMaterial3D tileMaterial)
+		{
+			tileMaterial.AlbedoColor = tileMaterial.AlbedoColor.Lerp(Colors.White, amount);
+		}
+
+		if (_markersByPos.TryGetValue(pos, out MeshInstance3D? marker) && marker.MaterialOverride is StandardMaterial3D markerMaterial)
+		{
+			markerMaterial.AlbedoColor = markerMaterial.AlbedoColor.Lerp(Colors.White, amount);
 		}
 	}
 
@@ -713,7 +917,20 @@ void fragment() {
 			return false;
 		}
 
-		return _tiles[position.Y, position.X] != 0;
+		if (_tiles[position.Y, position.X] == 0)
+		{
+			return false;
+		}
+
+		foreach (EnemyController enemy in _enemies)
+		{
+			if (enemy.CurrentHp > 0 && enemy.GridPos == position)
+			{
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	private Vector3 GridToWorld(Vector2I gridPos)

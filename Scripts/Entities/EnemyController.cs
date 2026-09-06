@@ -8,6 +8,7 @@ namespace DungeonCrawler.Entities;
 public partial class EnemyController : Node3D
 {
 	[Signal] public delegate void EnemyAttackedPlayerEventHandler(int damage);
+	[Signal] public delegate void EnemyDiedEventHandler(int rewardScore);
 
 	public Vector2I GridPos { get; private set; }
 	public string BehaviorType { get; private set; } = "patrol";
@@ -21,7 +22,10 @@ public partial class EnemyController : Node3D
 	private const int AiGridSize = 8;
 	private readonly List<MeshInstance3D> _pixelCells = new();
 	private MeshInstance3D _body = null!;
+	private StandardMaterial3D _bodyMaterial = null!;
 	private Node3D _nnWallRoot = null!;
+	private Tween? _flashTween;
+	private bool _isDying;
 	private double _aiTimer;
 	private double _attackCooldown;
 	private int _postAttackSteps;
@@ -38,6 +42,24 @@ public partial class EnemyController : Node3D
 		BuildVisuals();
 		UpdatePosition();
 		RefreshAiGridVisualization();
+	}
+
+	public void TakeDamage(int rawDamage)
+	{
+		if (CurrentHp <= 0 || _isDying)
+		{
+			return;
+		}
+
+		int mitigated = Math.Max(1, rawDamage - Stats.Defense);
+		CurrentHp = Math.Max(0, CurrentHp - mitigated);
+		PlayHitFlash();
+
+		if (CurrentHp <= 0)
+		{
+			EmitSignal(SignalName.EnemyDied, Stats.Reward);
+			PlayDeathAndFree();
+		}
 	}
 
 	public void Tick(double delta, Vector2I playerPos, int[,] walkableGrid)
@@ -204,7 +226,7 @@ public partial class EnemyController : Node3D
 			{
 				Vector2I direction = directions[i];
 				Vector2I candidate = new(GridPos.X + direction.X, GridPos.Y + direction.Y);
-				if (IsWalkable(candidate, walkableGrid))
+				if (IsWalkable(candidate, walkableGrid) && candidate != playerPos)
 				{
 					return direction;
 				}
@@ -229,7 +251,7 @@ public partial class EnemyController : Node3D
 		{
 			Vector2I direction = directions[i];
 			Vector2I candidate = new(GridPos.X + direction.X, GridPos.Y + direction.Y);
-			if (!IsWalkable(candidate, walkableGrid))
+			if (!IsWalkable(candidate, walkableGrid) || candidate == playerPos)
 			{
 				continue;
 			}
@@ -284,7 +306,7 @@ public partial class EnemyController : Node3D
 			}
 
 			Vector2I candidate = new(GridPos.X + direction.X, GridPos.Y + direction.Y);
-			if (IsWalkable(candidate, walkableGrid))
+			if (IsWalkable(candidate, walkableGrid) && candidate != playerPos)
 			{
 				return direction;
 			}
@@ -305,6 +327,13 @@ public partial class EnemyController : Node3D
 
 	private void BuildVisuals()
 	{
+		_bodyMaterial = new StandardMaterial3D
+		{
+			AlbedoColor = GetClassColor(),
+			Metallic = 0.15f,
+			Roughness = 0.45f
+		};
+
 		_body = new MeshInstance3D
 		{
 			Mesh = new CapsuleMesh
@@ -312,12 +341,7 @@ public partial class EnemyController : Node3D
 				Radius = 0.26f,
 				Height = 0.85f
 			},
-			MaterialOverride = new StandardMaterial3D
-			{
-				AlbedoColor = GetClassColor(),
-				Metallic = 0.15f,
-				Roughness = 0.45f
-			}
+			MaterialOverride = _bodyMaterial
 		};
 
 		AddChild(_body);
@@ -374,6 +398,30 @@ public partial class EnemyController : Node3D
 				_ => new Color(0.15f, 0.15f, 0.25f)
 			};
 		}
+	}
+
+	private Color GetHealthTintedColor()
+	{
+		float ratio = MaxHp > 0 ? Mathf.Clamp((float)CurrentHp / MaxHp, 0f, 1f) : 0f;
+		return GetClassColor().Lerp(Colors.White, (1f - ratio) * 0.9f);
+	}
+
+	private void PlayHitFlash()
+	{
+		_flashTween?.Kill();
+		_bodyMaterial.AlbedoColor = Colors.White;
+
+		_flashTween = CreateTween();
+		_flashTween.TweenProperty(_bodyMaterial, "albedo_color", GetHealthTintedColor(), 0.15).SetDelay(0.03);
+	}
+
+	private void PlayDeathAndFree()
+	{
+		_isDying = true;
+
+		Tween tween = CreateTween();
+		tween.TweenProperty(this, "scale", Vector3.Zero, 0.25).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+		tween.TweenCallback(Callable.From(QueueFree));
 	}
 
 	private void UpdatePosition()
