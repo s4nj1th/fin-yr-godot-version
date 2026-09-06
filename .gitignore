@@ -101,3 +101,14 @@ web-version/
 # Research/planning docs (not part of the shipped project)
 # ==========================================
 Idea/
+
+# ==========================================
+# Backend (Python evolutionary-loop server)
+# ==========================================
+Backend/.venv/
+Backend/__pycache__/
+Backend/**/__pycache__/
+Backend/*.egg-info/
+Backend/data/
+Backend/.pytest_cache/
+*.pyc

@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Godot;
 using DungeonCrawler.Data;
 using DungeonCrawler.Entities;
+using DungeonCrawler.Network;
 
 namespace DungeonCrawler.Core;
 
@@ -90,20 +92,63 @@ public partial class GameManager : Node3D
 	private bool _attackKeyWasDown;
 	private const double AttackCooldown = 0.35;
 
+	// --- Evolutionary loop integration (docs/EVOLUTIONARY_DESIGN.md) ---
+	// Each "trial" is one dungeon generated from a genome; when it ends
+	// (exit reached, manual regenerate, or timeout) we report pass/fail
+	// telemetry to the Python backend under Backend/ and fetch the next
+	// genome. If the backend isn't running, everything falls back to the
+	// default local genome — the backend is optional.
+	private const double MaxTrialSeconds = 240.0; // mirrors Backend/config.py MAX_TRIAL_SECONDS
+	private ApiClient _apiClient = null!;
+	private GenomeData _currentGenome = GenomeData.CreateDefault();
+	private string? _currentGenomeId;
+	private bool _backendAvailable;
+	private bool _isFetchingGenome;
+	private bool _rKeyWasDown;
+
+	private double _trialElapsedSeconds;
+	private int _trialDeaths;
+	private int _trialDamageTaken;
+	private int _trialEnemiesKilled;
+	private int _trialTrapsTriggered;
+	private int _trialChestsOpened;
+	private int _trialTotalChests;
+	private bool _trialReported;
+
 	public int PlayerCurrentHp => _playerCurrentHp;
 	public int PlayerMaxHp => _playerStats.MaxHp;
 	public int Score => _score;
+	public string? LastTrialResultMessage { get; private set; }
 
 	public override void _Ready()
 	{
-		RegenerateDungeon();
+		_apiClient = new ApiClient();
+		AddChild(_apiClient);
+		RequestNextGenomeAndRegenerateAsync();
 	}
 
 	public override void _Process(double delta)
 	{
-		if (Input.IsKeyPressed(Key.R))
+		bool rKeyDown = Input.IsKeyPressed(Key.R);
+		if (rKeyDown && !_rKeyWasDown && !_isFetchingGenome)
 		{
-			RegenerateDungeon();
+			_rKeyWasDown = rKeyDown;
+			EndTrialAndAdvanceAsync(exitReached: false, quitEarly: true);
+			return;
+		}
+		_rKeyWasDown = rKeyDown;
+
+		if (_isFetchingGenome)
+		{
+			return;
+		}
+
+		_trialElapsedSeconds += delta;
+		if (_trialElapsedSeconds > MaxTrialSeconds && !_trialReported)
+		{
+			// A passive timeout is a distinct signal from a manual quit — see
+			// docs/EVOLUTIONARY_DESIGN.md and mcc.py's _evaluate_minimal_criterion.
+			EndTrialAndAdvanceAsync(exitReached: false, quitEarly: false);
 			return;
 		}
 
@@ -128,8 +173,127 @@ public partial class GameManager : Node3D
 		}
 	}
 
+	private async Task RequestNextGenomeAsync()
+	{
+		NextCandidateResponse? response = await _apiClient.RequestNextGenomeAsync();
+		if (response != null)
+		{
+			_currentGenome = response.Genome;
+			_currentGenomeId = response.GenomeId;
+			_backendAvailable = true;
+		}
+		else
+		{
+			_currentGenome = GenomeData.CreateDefault();
+			_currentGenomeId = null;
+			_backendAvailable = false;
+		}
+	}
+
+	private async void RequestNextGenomeAndRegenerateAsync()
+	{
+		_isFetchingGenome = true;
+		await RequestNextGenomeAsync();
+		RegenerateDungeon();
+		_isFetchingGenome = false;
+	}
+
+	private async void EndTrialAndAdvanceAsync(bool exitReached, bool quitEarly)
+	{
+		if (_trialReported || _isFetchingGenome)
+		{
+			return;
+		}
+
+		_trialReported = true;
+		_isFetchingGenome = true;
+
+		var telemetry = new TelemetryMetrics
+		{
+			TimeTakenSec = (float)_trialElapsedSeconds,
+			DamageTaken = _trialDamageTaken,
+			HealthRemaining = _playerCurrentHp,
+			DeathsRetries = _trialDeaths,
+			EnemiesKilled = _trialEnemiesKilled,
+			TotalEnemies = _enemies.Count + _trialEnemiesKilled,
+			ChestsOpened = _trialChestsOpened,
+			TotalChests = _trialTotalChests,
+			TrapsTriggered = _trialTrapsTriggered,
+			ExplorationPercent = ComputeExplorationPercent(),
+			ExitReached = exitReached,
+			QuitEarly = quitEarly
+		};
+
+		if (_backendAvailable && !string.IsNullOrEmpty(_currentGenomeId))
+		{
+			ReportOutcomeResponse? result = await _apiClient.ReportOutcomeAsync(new ReportOutcomeRequest
+			{
+				GenomeId = _currentGenomeId,
+				Telemetry = telemetry
+			});
+
+			LastTrialResultMessage = result != null
+				? (result.Passed ? $"GENOME ACCEPTED — HALL OF FAME: {result.HallOfFameSize}" : $"GENOME REJECTED ({result.FailReason})")
+				: "BACKEND UNREACHABLE — RESULT NOT RECORDED";
+		}
+		else
+		{
+			LastTrialResultMessage = "LOCAL MODE — BACKEND OFFLINE";
+		}
+
+		await RequestNextGenomeAsync();
+		RegenerateDungeon();
+		_isFetchingGenome = false;
+	}
+
+	private float ComputeExplorationPercent()
+	{
+		int discovered = 0;
+		int walkable = 0;
+
+		for (int y = 0; y < _mapHeight; y++)
+		{
+			for (int x = 0; x < _mapWidth; x++)
+			{
+				if (_tiles[y, x] == 0)
+				{
+					continue;
+				}
+
+				walkable++;
+				if (_discoveredTiles[y, x])
+				{
+					discovered++;
+				}
+			}
+		}
+
+		return walkable > 0 ? (discovered / (float)walkable) * 100f : 0f;
+	}
+
+	private int CountTilesOfType(int type)
+	{
+		int count = 0;
+		for (int y = 0; y < _mapHeight; y++)
+		{
+			for (int x = 0; x < _mapWidth; x++)
+			{
+				if (_tiles[y, x] == type)
+				{
+					count++;
+				}
+			}
+		}
+
+		return count;
+	}
+
 	private void RegenerateDungeon()
 	{
+		_generationSettings.MapWidth = _currentGenome.Params.MapWidth;
+		_generationSettings.MapHeight = _currentGenome.Params.MapHeight;
+		_generationSettings.RoomAttempts = _currentGenome.Params.RoomAttempts;
+
 		_mapWidth = Mathf.Max(40, _generationSettings.MapWidth);
 		_mapHeight = Mathf.Max(40, _generationSettings.MapHeight);
 		_tiles = new int[_mapHeight, _mapWidth];
@@ -183,6 +347,14 @@ public partial class GameManager : Node3D
 		_playerCurrentHp = _playerStats.MaxHp;
 		_attackCooldownTimer = 0.0;
 
+		_trialElapsedSeconds = 0.0;
+		_trialDeaths = 0;
+		_trialDamageTaken = 0;
+		_trialEnemiesKilled = 0;
+		_trialTrapsTriggered = 0;
+		_trialChestsOpened = 0;
+		_trialReported = false;
+
 		GenerateDungeon();
 		BuildLevel();
 		SetupCamera();
@@ -190,6 +362,8 @@ public partial class GameManager : Node3D
 		SpawnEnemies();
 		UpdateCameraPosition();
 		UpdateTileVisibility();
+
+		_trialTotalChests = CountTilesOfType(6);
 	}
 
 	private void GenerateDungeon()
@@ -324,66 +498,43 @@ public partial class GameManager : Node3D
 
 	private void PlaceSpecialTiles()
 	{
-		var trapPositions = new List<Vector2I>();
-		var chestPositions = new List<Vector2I>();
-		var healPositions = new List<Vector2I>();
-		var enemyPositions = new List<Vector2I>();
+		// Genome-driven: each room independently rolls for its special tile type
+		// based on the current genome's density parameters (Backend/genome.py).
+		// Rolling per-room instead of a fixed i%4 cycle makes these ratios
+		// continuously evolvable — the default genome (0.25 each) reproduces
+		// the original even split. See docs/EVOLUTIONARY_DESIGN.md.
+		GenomeParams genomeParams = _currentGenome.Params;
+		float trapCut = Mathf.Clamp(genomeParams.TrapDensity, 0f, 1f);
+		float chestCut = trapCut + Mathf.Clamp(genomeParams.ChestDensity, 0f, 1f);
+		float healCut = chestCut + Mathf.Clamp(genomeParams.HealDensity, 0f, 1f);
+		float enemyCut = healCut + Mathf.Clamp(genomeParams.EnemyDensity, 0f, 1f);
 
 		for (int i = 1; i < _rooms.Count; i++)
 		{
 			var room = _rooms[i];
 			var center = new Vector2I(room.X + room.W / 2, room.Y + room.H / 2);
 
-			switch (i % 4)
+			if (_tiles[center.Y, center.X] != 1 && _tiles[center.Y, center.X] != 2)
 			{
-				case 0:
-					trapPositions.Add(center);
-					break;
-				case 1:
-					chestPositions.Add(center);
-					break;
-				case 2:
-					healPositions.Add(center);
-					break;
-				default:
-					enemyPositions.Add(center);
-					break;
+				continue;
 			}
-		}
 
-		for (int i = 0; i < trapPositions.Count; i++)
-		{
-			var pos = trapPositions[i];
-			if (_tiles[pos.Y, pos.X] == 1 || _tiles[pos.Y, pos.X] == 2)
+			float roll = _rng.Randf();
+			if (roll < trapCut)
 			{
-				_tiles[pos.Y, pos.X] = 4;
+				_tiles[center.Y, center.X] = 4;
 			}
-		}
-
-		for (int i = 0; i < chestPositions.Count; i++)
-		{
-			var pos = chestPositions[i];
-			if (_tiles[pos.Y, pos.X] == 1 || _tiles[pos.Y, pos.X] == 2)
+			else if (roll < chestCut)
 			{
-				_tiles[pos.Y, pos.X] = 6;
+				_tiles[center.Y, center.X] = 6;
 			}
-		}
-
-		for (int i = 0; i < healPositions.Count; i++)
-		{
-			var pos = healPositions[i];
-			if (_tiles[pos.Y, pos.X] == 1 || _tiles[pos.Y, pos.X] == 2)
+			else if (roll < healCut)
 			{
-				_tiles[pos.Y, pos.X] = 9;
+				_tiles[center.Y, center.X] = 9;
 			}
-		}
-
-		for (int i = 0; i < enemyPositions.Count; i++)
-		{
-			var pos = enemyPositions[i];
-			if (_tiles[pos.Y, pos.X] == 1 || _tiles[pos.Y, pos.X] == 2)
+			else if (roll < enemyCut)
 			{
-				_tiles[pos.Y, pos.X] = 5;
+				_tiles[center.Y, center.X] = 5;
 			}
 		}
 	}
@@ -662,13 +813,7 @@ void fragment() {
 		_enemyRoot = new Node3D();
 		AddChild(_enemyRoot);
 		Vector2 worldOffset = GetGridWorldOrigin();
-
-		var definitions = new[]
-		{
-			EnemyClassDefinition.Create("scout", "Scout", "patrol", new EnemyStats { MaxHp = 18, Speed = 1.3f, Attack = 8, Defense = 1, VisionRange = 5, AttackRange = 1, Reward = 12 }),
-			EnemyClassDefinition.Create("brute", "Brute", "ambush", new EnemyStats { MaxHp = 28, Speed = 0.9f, Attack = 12, Defense = 4, VisionRange = 6, AttackRange = 1, Reward = 18 }),
-			EnemyClassDefinition.Create("guardian", "Guardian", "patrol", new EnemyStats { MaxHp = 24, Speed = 0.8f, Attack = 10, Defense = 6, VisionRange = 4, AttackRange = 2, Reward = 15 })
-		};
+		float difficultyScale = Mathf.Max(0.1f, _currentGenome.Params.EnemyDifficultyScale);
 
 		var spawnPoints = new List<Vector2I>();
 		for (int y = 0; y < _mapHeight; y++)
@@ -685,14 +830,63 @@ void fragment() {
 		int maxEnemies = Mathf.Min(spawnPoints.Count, 120);
 		for (int i = 0; i < maxEnemies; i++)
 		{
+			EnemyClassDefinition definition = CreateEnemyDefinitionForRoll(_rng.Randf(), difficultyScale);
+
 			var enemy = new EnemyController();
 			enemy.WorldOffset = worldOffset;
-			enemy.Initialize(spawnPoints[i], definitions[i % definitions.Length].Behavior, definitions[i % definitions.Length]);
+			enemy.Initialize(spawnPoints[i], definition.Behavior, definition);
 			enemy.Position = GridToWorld(spawnPoints[i]) + new Vector3(0, 0.4f, 0);
 			enemy.EnemyAttackedPlayer += OnEnemyAttackedPlayer;
 			_enemyRoot.AddChild(enemy);
 			_enemies.Add(enemy);
 		}
+	}
+
+	// Which behavior gets spawned is drawn from the current genome's
+	// enemy_behavior_mix weights (Backend/genome.py); EnemyDifficultyScale
+	// (also genome-evolved) scales MaxHp/Attack on top of that. See
+	// EnemyController.IsRanged / GetAttackDistance for how behavior +
+	// AttackRange together decide movement pattern and attack distance/FX.
+	private EnemyClassDefinition CreateEnemyDefinitionForRoll(float roll, float difficultyScale)
+	{
+		Dictionary<string, float> mix = _currentGenome.Params.EnemyBehaviorMix;
+		float total = 0f;
+		foreach (float weight in mix.Values)
+		{
+			total += Mathf.Max(0f, weight);
+		}
+
+		if (total <= 0f)
+		{
+			total = 1f;
+		}
+
+		float cumulative = 0f;
+		string chosenBehavior = "melee_chaser";
+		foreach (KeyValuePair<string, float> entry in mix)
+		{
+			cumulative += Mathf.Max(0f, entry.Value) / total;
+			if (roll <= cumulative)
+			{
+				chosenBehavior = entry.Key;
+				break;
+			}
+		}
+
+		return chosenBehavior switch
+		{
+			"melee_hit_run" => EnemyClassDefinition.Create("scout", "Scout", "melee_hit_run", ScaleStats(new EnemyStats { MaxHp = 18, Speed = 1.3f, Attack = 8, Defense = 1, VisionRange = 5, AttackRange = 1, Reward = 12 }, difficultyScale)),
+			"ranged_kite" => EnemyClassDefinition.Create("guardian", "Guardian", "ranged_kite", ScaleStats(new EnemyStats { MaxHp = 24, Speed = 0.8f, Attack = 10, Defense = 6, VisionRange = 6, AttackRange = 5, Reward = 15 }, difficultyScale)),
+			"ranged_strafe" => EnemyClassDefinition.Create("sentinel", "Sentinel", "ranged_strafe", ScaleStats(new EnemyStats { MaxHp = 24, Speed = 0.8f, Attack = 10, Defense = 6, VisionRange = 6, AttackRange = 5, Reward = 15 }, difficultyScale)),
+			_ => EnemyClassDefinition.Create("brute", "Brute", "melee_chaser", ScaleStats(new EnemyStats { MaxHp = 28, Speed = 0.9f, Attack = 12, Defense = 4, VisionRange = 6, AttackRange = 1, Reward = 18 }, difficultyScale)),
+		};
+	}
+
+	private static EnemyStats ScaleStats(EnemyStats baseStats, float difficultyScale)
+	{
+		baseStats.MaxHp = Mathf.Max(1, Mathf.RoundToInt(baseStats.MaxHp * difficultyScale));
+		baseStats.Attack = Mathf.Max(1, Mathf.RoundToInt(baseStats.Attack * difficultyScale));
+		return baseStats;
 	}
 
 	private void HandlePlayerInput(double delta)
@@ -769,6 +963,7 @@ void fragment() {
 		if (target.CurrentHp <= 0)
 		{
 			_score += target.Stats.Reward;
+			_trialEnemiesKilled++;
 		}
 	}
 
@@ -810,6 +1005,7 @@ void fragment() {
 	{
 		int mitigated = Math.Max(1, rawDamage - _playerStats.Defense);
 		_playerCurrentHp = Math.Max(0, _playerCurrentHp - mitigated);
+		_trialDamageTaken += mitigated;
 
 		if (_playerCurrentHp <= 0)
 		{
@@ -819,6 +1015,7 @@ void fragment() {
 
 	private void HandlePlayerDeath()
 	{
+		_trialDeaths++;
 		_score = Mathf.Max(0, _score - 20);
 		_playerPos = _startPos;
 		SetPlayerWorldPosition();
@@ -851,11 +1048,13 @@ void fragment() {
 					_chestClaimed[_playerPos.Y, _playerPos.X] = true;
 					_score += 25;
 					_rewardCollected = true;
+					_trialChestsOpened++;
 					LightenTile(_playerPos, 0.55f);
 				}
 				break;
 			case 8:
 				_score += 50;
+				EndTrialAndAdvanceAsync(exitReached: true, quitEarly: false);
 				break;
 		}
 	}
@@ -867,6 +1066,11 @@ void fragment() {
 		{
 			_tileEffectAccumulator = 0.0;
 			_lastStandingTileType = tileType;
+
+			if (tileType == 4)
+			{
+				_trialTrapsTriggered++;
+			}
 		}
 
 		if (tileType == 4)

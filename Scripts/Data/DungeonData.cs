@@ -179,6 +179,64 @@ public class TelemetryMetrics
 	[JsonPropertyName("total_chests")] public int TotalChests { get; set; }
 	[JsonPropertyName("traps_triggered")] public int TrapsTriggered { get; set; }
 	[JsonPropertyName("exploration_percent")] public float ExplorationPercent { get; set; }
+	[JsonPropertyName("exit_reached")] public bool ExitReached { get; set; }
+	[JsonPropertyName("quit_early")] public bool QuitEarly { get; set; }
+}
+
+// --- Evolutionary-algorithm genome contract (Backend/models.py mirrors this) ---
+// A genome is a flat set of dungeon-generation + encounter parameters that the
+// Python MCC backend evolves. See docs/EVOLUTIONARY_DESIGN.md for the design
+// rationale (genotype, mutation, minimal criterion, surrogate gating).
+
+public class GenomeParams
+{
+	[JsonPropertyName("map_width")] public int MapWidth { get; set; } = 160;
+	[JsonPropertyName("map_height")] public int MapHeight { get; set; } = 160;
+	[JsonPropertyName("room_attempts")] public int RoomAttempts { get; set; } = 280;
+	[JsonPropertyName("trap_density")] public float TrapDensity { get; set; } = 0.25f;
+	[JsonPropertyName("chest_density")] public float ChestDensity { get; set; } = 0.25f;
+	[JsonPropertyName("heal_density")] public float HealDensity { get; set; } = 0.25f;
+	[JsonPropertyName("enemy_density")] public float EnemyDensity { get; set; } = 0.25f;
+	[JsonPropertyName("enemy_behavior_mix")] public Dictionary<string, float> EnemyBehaviorMix { get; set; } = new()
+	{
+		{ "melee_chaser", 0.34f },
+		{ "melee_hit_run", 0.33f },
+		{ "ranged_kite", 0.33f },
+		{ "ranged_strafe", 0.0f }
+	};
+	[JsonPropertyName("enemy_difficulty_scale")] public float EnemyDifficultyScale { get; set; } = 1.0f;
+}
+
+public class GenomeData
+{
+	[JsonPropertyName("id")] public string Id { get; set; } = "";
+	[JsonPropertyName("parent_id")] public string? ParentId { get; set; }
+	[JsonPropertyName("generation")] public int Generation { get; set; }
+	[JsonPropertyName("params")] public GenomeParams Params { get; set; } = new();
+
+	public static GenomeData CreateDefault()
+	{
+		return new GenomeData { Id = "", ParentId = null, Generation = 0, Params = new GenomeParams() };
+	}
+}
+
+public class NextCandidateResponse
+{
+	[JsonPropertyName("genome_id")] public string GenomeId { get; set; } = "";
+	[JsonPropertyName("genome")] public GenomeData Genome { get; set; } = new();
+}
+
+public class ReportOutcomeRequest
+{
+	[JsonPropertyName("genome_id")] public string GenomeId { get; set; } = "";
+	[JsonPropertyName("telemetry")] public TelemetryMetrics Telemetry { get; set; } = new();
+}
+
+public class ReportOutcomeResponse
+{
+	[JsonPropertyName("passed")] public bool Passed { get; set; }
+	[JsonPropertyName("hall_of_fame_size")] public int HallOfFameSize { get; set; }
+	[JsonPropertyName("fail_reason")] public string? FailReason { get; set; }
 }
 
 public class TelemetryRequest
