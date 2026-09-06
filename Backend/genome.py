@@ -109,3 +109,46 @@ def mutate(parent: dict[str, Any]) -> dict[str, Any]:
         "generation": parent["generation"] + 1,
         "params": child_params,
     }
+
+
+def sanitize_params(candidate_params: Any, fallback_params: dict[str, Any]) -> dict[str, Any]:
+    """Defensively repairs an untrusted params dict (e.g. parsed from an LLM
+    response) into a guaranteed-valid genome: any missing/malformed field is
+    replaced from fallback_params, every scalar is clamped to its configured
+    bounds, and the behavior mix is renormalized. Used so a bad or adversarial
+    LLM response can never produce an out-of-bounds genome or crash the server.
+    """
+    if not isinstance(candidate_params, dict):
+        candidate_params = {}
+
+    sanitized: dict[str, Any] = {}
+
+    for key, (lo, hi) in GENOME_BOUNDS.items():
+        value = candidate_params.get(key, fallback_params[key])
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = fallback_params[key]
+
+        value = _clamp(value, lo, hi)
+        if isinstance(lo, int) and isinstance(hi, int):
+            value = int(round(value))
+        sanitized[key] = value
+
+    mix_in = candidate_params.get("enemy_behavior_mix")
+    if not isinstance(mix_in, dict):
+        mix_in = {}
+
+    mix: dict[str, float] = {}
+    for behavior in BEHAVIOR_TYPES:
+        try:
+            mix[behavior] = max(0.0, float(mix_in.get(behavior, 0.0)))
+        except (TypeError, ValueError):
+            mix[behavior] = 0.0
+
+    total = sum(mix.values())
+    sanitized["enemy_behavior_mix"] = (
+        {k: v / total for k, v in mix.items()} if total > 0 else dict(fallback_params["enemy_behavior_mix"])
+    )
+
+    return sanitized
