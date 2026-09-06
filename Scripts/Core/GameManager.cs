@@ -665,9 +665,11 @@ void fragment() {
 
 		var definitions = new[]
 		{
-			EnemyClassDefinition.Create("scout", "Scout", "patrol", new EnemyStats { MaxHp = 18, Speed = 1.3f, Attack = 8, Defense = 1, VisionRange = 5, AttackRange = 1, Reward = 12 }),
-			EnemyClassDefinition.Create("brute", "Brute", "ambush", new EnemyStats { MaxHp = 28, Speed = 0.9f, Attack = 12, Defense = 4, VisionRange = 6, AttackRange = 1, Reward = 18 }),
-			EnemyClassDefinition.Create("guardian", "Guardian", "patrol", new EnemyStats { MaxHp = 24, Speed = 0.8f, Attack = 10, Defense = 6, VisionRange = 4, AttackRange = 2, Reward = 15 })
+			// Behavior + AttackRange together decide movement pattern and attack distance/FX
+			// (see EnemyController.IsRanged / GetAttackDistance) — tune freely per class.
+			EnemyClassDefinition.Create("scout", "Scout", "melee_hit_run", new EnemyStats { MaxHp = 18, Speed = 1.3f, Attack = 8, Defense = 1, VisionRange = 5, AttackRange = 1, Reward = 12 }),
+			EnemyClassDefinition.Create("brute", "Brute", "melee_chaser", new EnemyStats { MaxHp = 28, Speed = 0.9f, Attack = 12, Defense = 4, VisionRange = 6, AttackRange = 1, Reward = 18 }),
+			EnemyClassDefinition.Create("guardian", "Guardian", "ranged_kite", new EnemyStats { MaxHp = 24, Speed = 0.8f, Attack = 10, Defense = 6, VisionRange = 6, AttackRange = 5, Reward = 15 })
 		};
 
 		var spawnPoints = new List<Vector2I>();
