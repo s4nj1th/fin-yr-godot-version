@@ -42,9 +42,17 @@ class Genome(BaseModel):
     params: GenomeParams
 
 
+class SurrogateEstimate(BaseModel):
+    prob: float
+    std: float
+
+
 class NextCandidateResponse(BaseModel):
     genome_id: str = Field(..., description="Echoes genome.id, kept top-level for convenience")
     genome: Genome
+    surrogate_estimate: Optional[SurrogateEstimate] = Field(
+        None, description="Present once the surrogate has enough labels to have been consulted for this candidate"
+    )
 
 
 class ReportOutcomeResponse(BaseModel):

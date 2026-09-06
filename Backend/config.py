@@ -33,6 +33,12 @@ MUTATION_SIGMA_FRACTION = 0.15
 # Probability that a given scalar gene is perturbed at all during mutation
 MUTATION_RATE = 0.6
 
+# --- Phase 2: online surrogate + uncertainty-gated selection (Idea.md 5.4/5.5) ---
+SURROGATE_MIN_LABELS = 5           # don't trust/use the surrogate until at least this many real human outcomes exist
+SURROGATE_UNCERTAINTY_BAND = (0.4, 0.6)  # predicted prob inside this band -> spend a real playthrough
+SURROGATE_STD_THRESHOLD = 0.25     # predicted std above this -> spend a real playthrough regardless of prob
+SURROGATE_MAX_PROPOSAL_ATTEMPTS = 25  # safety cap so a saturated surrogate can't loop forever without progress
+
 DATA_DIR = "data"
 STATE_FILE = f"{DATA_DIR}/mcc_state.json"
 SESSION_LOG_FILE = f"{DATA_DIR}/session_log.jsonl"
