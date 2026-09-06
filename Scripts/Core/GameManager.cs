@@ -39,16 +39,16 @@ public partial class GameManager : Node3D
 	// made trap-vs-spawn and heal-vs-start indistinguishable at a glance.
 	private readonly Dictionary<int, Color> _tileColors = new()
 	{
-		{ 0, Color.FromHtml("#111422") },
-		{ 1, Color.FromHtml("#1e2436") },
-		{ 2, Color.FromHtml("#181d2e") },
-		{ 3, Color.FromHtml("#8b5cf6") },
-		{ 4, Color.FromHtml("#dc2626") },
-		{ 5, Color.FromHtml("#a855f7") },
-		{ 6, Color.FromHtml("#f59e0b") },
-		{ 7, Color.FromHtml("#38bdf8") },
-		{ 8, Color.FromHtml("#06b6d4") },
-		{ 9, Color.FromHtml("#22c55e") }
+		{ 0, Color.FromHtml("#170f2e") },
+		{ 1, Color.FromHtml("#241a44") },
+		{ 2, Color.FromHtml("#1c1438") },
+		{ 3, Color.FromHtml("#a78bfa") },
+		{ 4, Color.FromHtml("#fb2c46") },
+		{ 5, Color.FromHtml("#d946ef") },
+		{ 6, Color.FromHtml("#fbbf24") },
+		{ 7, Color.FromHtml("#22d3ee") },
+		{ 8, Color.FromHtml("#34d399") },
+		{ 9, Color.FromHtml("#f472b6") }
 	};
 
 	private const double TrapDamagePerSecond = 12.0;
@@ -71,8 +71,10 @@ public partial class GameManager : Node3D
 	private MeshInstance3D _fogOverlay = null!;
 	private ShaderMaterial _fogMaterial = null!;
 	private Camera3D _camera = null!;
+	private WorldEnvironment? _worldEnvironment;
 	private Vector2I _playerPos;
 	private Vector2I _startPos;
+	private Vector2I _exitPos;
 	private double _moveTimer;
 	private int _score;
 	private bool _rewardCollected;
@@ -119,6 +121,8 @@ public partial class GameManager : Node3D
 	public int PlayerMaxHp => _playerStats.MaxHp;
 	public int Score => _score;
 	public string? LastTrialResultMessage { get; private set; }
+	public Vector2I PlayerGridPosition => _playerPos;
+	public Vector2I ExitGridPosition => _exitPos;
 
 	public override void _Ready()
 	{
@@ -456,6 +460,7 @@ public partial class GameManager : Node3D
 		Vector2I exitPos = new(exitRoom.X + exitRoom.W / 2, exitRoom.Y + exitRoom.H / 2);
 
 		_startPos = startPos;
+		_exitPos = exitPos;
 		_playerPos = startPos;
 		_tiles[startPos.Y, startPos.X] = 7;
 		_tiles[exitPos.Y, exitPos.X] = 8;
@@ -636,23 +641,51 @@ public partial class GameManager : Node3D
 					continue;
 				}
 
+				Color markerColor = _tileColors.GetValueOrDefault(tileType, Colors.White);
 				var marker = new MeshInstance3D
 				{
-					Mesh = tileType == 6
-						? new BoxMesh { Size = new Vector3(0.48f, 0.48f, 0.48f) }
-						: new BoxMesh { Size = new Vector3(0.55f, 0.18f, 0.55f) },
-					Position = GridToWorld(new Vector2I(x, y)) + new Vector3(0, tileType == 6 ? 0.68f : 0.52f, 0),
+					Mesh = CreateMarkerMesh(tileType),
+					Position = GridToWorld(new Vector2I(x, y)) + new Vector3(0, MarkerHeight(tileType), 0),
 					MaterialOverride = new StandardMaterial3D
 					{
-						AlbedoColor = _tileColors.GetValueOrDefault(tileType, Colors.White),
-						Metallic = 0.0f,
-						Roughness = 0.4f
+						AlbedoColor = markerColor,
+						Metallic = 0.05f,
+						Roughness = 0.45f
 					}
 				};
 				_markerRoot.AddChild(marker);
 				_markersByPos[new Vector2I(x, y)] = marker;
 			}
 		}
+	}
+
+	// Each special tile gets its own silhouette, not just its own color —
+	// so it's still identifiable under fog, at a distance, or for anyone
+	// who can't rely on hue to tell tiles apart.
+	private static Mesh CreateMarkerMesh(int tileType)
+	{
+		return tileType switch
+		{
+			4 => new CylinderMesh { TopRadius = 0f, BottomRadius = 0.32f, Height = 0.5f },  // trap: spike
+			6 => new BoxMesh { Size = new Vector3(0.48f, 0.48f, 0.48f) },                    // chest: crate
+			7 => new SphereMesh { Radius = 0.26f, Height = 0.52f },                          // start: orb
+			8 => new TorusMesh { InnerRadius = 0.2f, OuterRadius = 0.36f },                  // exit: ring/portal
+			9 => new PrismMesh { Size = new Vector3(0.5f, 0.5f, 0.5f) },                     // heal: wedge
+			_ => new BoxMesh { Size = new Vector3(0.4f, 0.4f, 0.4f) }
+		};
+	}
+
+	private static float MarkerHeight(int tileType)
+	{
+		return tileType switch
+		{
+			4 => 0.61f,
+			6 => 0.68f,
+			7 => 0.62f,
+			8 => 0.45f,
+			9 => 0.61f,
+			_ => 0.5f
+		};
 	}
 
 	private void CreateFogOverlay()
@@ -775,14 +808,24 @@ void fragment() {
 		return changed;
 	}
 
+	// Tilted rather than a straight overhead look — reveals wall height and
+	// lets directional-light shadows actually read as depth, so the level
+	// looks like a 3D space rather than a flat painted map.
+	private const float CameraPitchDegrees = -55f;
+	private const float CameraDistance = 30f;
+
 	private void SetupCamera()
 	{
+		if (_worldEnvironment == null)
+		{
+			SetupEnvironment();
+		}
+
 		_camera = new Camera3D
 		{
-			Position = new Vector3(0, 26f, 0),
-			RotationDegrees = new Vector3(-90, 0, 0),
+			RotationDegrees = new Vector3(CameraPitchDegrees, 0, 0),
 			Projection = Camera3D.ProjectionType.Orthogonal,
-			Size = 20f,
+			Size = 22f,
 			Current = true
 		};
 
@@ -790,11 +833,39 @@ void fragment() {
 
 		var light = new DirectionalLight3D
 		{
-			RotationDegrees = new Vector3(-45, 30, 0),
-			LightEnergy = 1.5f
+			RotationDegrees = new Vector3(-50, 35, 0),
+			LightColor = Color.FromHtml("#fff3e0"),
+			LightEnergy = 1.6f,
+			ShadowEnabled = true
 		};
 
 		AddChild(light);
+	}
+
+	private void SetupEnvironment()
+	{
+		var sky = new Sky
+		{
+			SkyMaterial = new ProceduralSkyMaterial
+			{
+				SkyTopColor = Color.FromHtml("#120a26"),
+				SkyHorizonColor = Color.FromHtml("#4c3b7a"),
+				GroundBottomColor = Color.FromHtml("#0a0714"),
+				GroundHorizonColor = Color.FromHtml("#2c2148")
+			}
+		};
+
+		var environment = new Godot.Environment
+		{
+			BackgroundMode = Godot.Environment.BGMode.Sky,
+			Sky = sky,
+			AmbientLightSource = Godot.Environment.AmbientSource.Sky,
+			AmbientLightEnergy = 0.7f,
+			TonemapMode = Godot.Environment.ToneMapper.Aces
+		};
+
+		_worldEnvironment = new WorldEnvironment { Environment = environment };
+		AddChild(_worldEnvironment);
 	}
 
 	private void SetupPlayer()
@@ -830,9 +901,11 @@ void fragment() {
 			return;
 		}
 
-		Vector3 playerWorld = _playerMesh.Position;
-		_camera.Position = new Vector3(playerWorld.X, 26.0f, playerWorld.Z);
-		_camera.RotationDegrees = new Vector3(-90, 0, 0);
+		// Follow at a fixed offset along the camera's own (tilted) forward
+		// axis, rather than a hardcoded straight-down vector — this way the
+		// pitch angle is only ever defined once, in SetupCamera.
+		Vector3 forward = -_camera.Transform.Basis.Z;
+		_camera.Position = _playerMesh.Position - (forward * CameraDistance);
 	}
 
 	private void SpawnEnemies()

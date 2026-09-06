@@ -18,8 +18,8 @@ GameHud="*res://Scripts/UI/GameHud.cs"
 
 [application]
 
-config/name="Closed-Loop LLM PCG Dungeon Crawler"
-config/description="Godot 4 C# Port for Closed-Loop LLM Procedural Content Generation Dungeon Crawler"
+config/name="Evolutionary Dungeon Crawler"
+config/description="A Godot 4 C# dungeon crawler driven by a human-coupled evolutionary loop (Minimal Criterion Coevolution) — see docs/EVOLUTIONARY_DESIGN.md."
 run/main_scene="res://Scenes/MeleeAiTest.tscn"
 config/features=PackedStringArray("4.7", "C#")
 

@@ -7,8 +7,10 @@ namespace DungeonCrawler.UI;
 /// Standalone overlay HUD: title bar, controls legend, session info,
 /// pause menu, and reactive feedback. Registered as an autoload so it
 /// works on top of any scene without modifying that scene's own script
-/// or node tree. Reacts to raw Input polling only — never reads state
-/// from other scripts, so it stays independent of gameplay code.
+/// or node tree. Never depends on being attached to a particular scene —
+/// it duck-types the current scene as a GameManager for gameplay readouts
+/// (HP/score/exit position) and degrades gracefully (those elements just
+/// hide) if the current scene isn't one.
 /// </summary>
 public partial class GameHud : CanvasLayer
 {
@@ -25,6 +27,7 @@ public partial class GameHud : CanvasLayer
 	private Label _hpLabel = null!;
 	private ProgressBar _hpBar = null!;
 	private Label _scoreLabel = null!;
+	private Label _exitLabel = null!;
 	private PanelContainer _toastPanel = null!;
 	private Label _toastLabel = null!;
 	private ColorRect _damageFlash = null!;
@@ -144,33 +147,24 @@ void fragment() {
 	private void BuildTopBar()
 	{
 		var panel = new PanelContainer();
-		panel.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.TopWide, Control.LayoutPresetMode.KeepSize, 0);
+		panel.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.TopLeft, Control.LayoutPresetMode.KeepSize, 0);
 		panel.OffsetTop = 14;
 		panel.OffsetLeft = 20;
-		panel.OffsetRight = -220;
-		panel.AddThemeStyleboxOverride("panel", MakePanelStyle(PanelBg, new Color(AccentCyan, 0.35f)));
-		AddChild(panel);
+		panel.AddThemeStyleboxOverride("panel", MakePanelStyle(PanelBg, new Color(AccentCyan, 0.35f), 1.5f, 8f));
 
-		var vbox = new VBoxContainer();
-		panel.AddChild(vbox);
+		var style = (StyleBoxFlat)panel.GetThemeStylebox("panel");
+		style.ContentMarginTop = 6;
+		style.ContentMarginBottom = 6;
+		AddChild(panel);
 
 		var title = new Label
 		{
-			Text = "CLOSED-LOOP LLM PCG DUNGEON CRAWLER",
+			Text = "EVOLUTIONARY DUNGEON CRAWLER",
 			HorizontalAlignment = HorizontalAlignment.Left
 		};
 		title.AddThemeColorOverride("font_color", TextPrimary);
-		title.AddThemeFontSizeOverride("font_size", 18);
-		vbox.AddChild(title);
-
-		var subtitle = new Label
-		{
-			Text = "prototype build — press ESC to pause",
-			HorizontalAlignment = HorizontalAlignment.Left
-		};
-		subtitle.AddThemeColorOverride("font_color", TextMuted);
-		subtitle.AddThemeFontSizeOverride("font_size", 12);
-		vbox.AddChild(subtitle);
+		title.AddThemeFontSizeOverride("font_size", 15);
+		panel.AddChild(title);
 	}
 
 	private void BuildInfoPanel()
@@ -211,6 +205,11 @@ void fragment() {
 		_timeLabel.AddThemeFontSizeOverride("font_size", 13);
 		vbox.AddChild(_timeLabel);
 
+		_exitLabel = new Label { Text = "EXIT --", HorizontalAlignment = HorizontalAlignment.Right };
+		_exitLabel.AddThemeColorOverride("font_color", Color.FromHtml("#34d399"));
+		_exitLabel.AddThemeFontSizeOverride("font_size", 13);
+		vbox.AddChild(_exitLabel);
+
 		_fpsLabel = new Label { Text = "FPS 0", HorizontalAlignment = HorizontalAlignment.Right };
 		_fpsLabel.AddThemeColorOverride("font_color", TextMuted);
 		_fpsLabel.AddThemeFontSizeOverride("font_size", 12);
@@ -238,9 +237,11 @@ void fragment() {
 			_hpBar.MaxValue = maxHp;
 			_hpBar.Value = currentHp;
 			_scoreLabel.Text = $"SCORE {gameManager.Score}";
+			_exitLabel.Text = DescribeExit(gameManager.PlayerGridPosition, gameManager.ExitGridPosition);
 			_hpLabel.Visible = true;
 			_hpBar.Visible = true;
 			_scoreLabel.Visible = true;
+			_exitLabel.Visible = true;
 
 			if (_lastKnownHp >= 0 && currentHp < _lastKnownHp)
 			{
@@ -253,8 +254,32 @@ void fragment() {
 			_hpLabel.Visible = false;
 			_hpBar.Visible = false;
 			_scoreLabel.Visible = false;
+			_exitLabel.Visible = false;
 			_lastKnownHp = -1;
 		}
+	}
+
+	// A minimal readout of where the exit is relative to the player — useful
+	// under fog-of-war on a large map without turning into a full minimap.
+	private static readonly string[] CompassArrows = { "→", "↘", "↓", "↙", "←", "↖", "↑", "↗" };
+
+	private static string DescribeExit(Vector2I playerPos, Vector2I exitPos)
+	{
+		Vector2I delta = exitPos - playerPos;
+		if (delta == Vector2I.Zero)
+		{
+			return "EXIT HERE";
+		}
+
+		float angleDeg = Mathf.RadToDeg(Mathf.Atan2(delta.Y, delta.X));
+		if (angleDeg < 0)
+		{
+			angleDeg += 360f;
+		}
+		int index = Mathf.RoundToInt(angleDeg / 45f) % CompassArrows.Length;
+		int distance = Mathf.Abs(delta.X) + Mathf.Abs(delta.Y);
+
+		return $"EXIT {CompassArrows[index]} {distance}";
 	}
 
 	private void BuildDamageFlash()
@@ -301,50 +326,40 @@ void fragment() {
 		tween.TweenProperty(_toastPanel, "modulate:a", 0.0, 0.35);
 	}
 
-	private void AddLegendRow(VBoxContainer parent, string key, string description)
+	private void AddLegendEntry(HBoxContainer parent, string key, string description)
 	{
-		var row = new HBoxContainer();
-		parent.AddChild(row);
-
-		var keyBadge = new PanelContainer { CustomMinimumSize = new Vector2(52, 0) };
-		keyBadge.AddThemeStyleboxOverride("panel", MakePanelStyle(new Color(AccentCyan, 0.16f), new Color(AccentCyan, 0.45f), 1f, 6f));
-		var keyLabel = new Label
+		var entry = new Label
 		{
-			Text = key,
-			HorizontalAlignment = HorizontalAlignment.Center
-		};
-		keyLabel.AddThemeColorOverride("font_color", AccentCyan);
-		keyLabel.AddThemeFontSizeOverride("font_size", 13);
-		keyBadge.AddChild(keyLabel);
-		row.AddChild(keyBadge);
-
-		var descLabel = new Label
-		{
-			Text = description,
+			Text = $"{key} {description}",
 			VerticalAlignment = VerticalAlignment.Center
 		};
-		descLabel.AddThemeColorOverride("font_color", TextPrimary);
-		descLabel.AddThemeFontSizeOverride("font_size", 13);
-		row.AddChild(descLabel);
+		entry.AddThemeColorOverride("font_color", TextPrimary);
+		entry.AddThemeFontSizeOverride("font_size", 12);
+		parent.AddChild(entry);
 	}
 
 	private void BuildControlsLegend()
 	{
 		var panel = new PanelContainer();
-		panel.AddThemeStyleboxOverride("panel", MakePanelStyle(PanelBg, new Color(AccentAmber, 0.3f)));
+		panel.AddThemeStyleboxOverride("panel", MakePanelStyle(PanelBg, new Color(AccentCyan, 0.25f), 1f, 8f));
+
+		var style = (StyleBoxFlat)panel.GetThemeStylebox("panel");
+		style.ContentMarginTop = 6;
+		style.ContentMarginBottom = 6;
 		AddChild(panel);
 
-		var vbox = new VBoxContainer { CustomMinimumSize = new Vector2(190, 0) };
-		panel.AddChild(vbox);
+		var row = new HBoxContainer();
+		row.AddThemeConstantOverride("separation", 16);
+		panel.AddChild(row);
 
-		AddLegendRow(vbox, "WASD", "Move");
-		AddLegendRow(vbox, "SPACE", "Attack");
-		AddLegendRow(vbox, "R", "Regenerate dungeon");
-		AddLegendRow(vbox, "ESC", "Pause");
+		AddLegendEntry(row, "WASD", "Move");
+		AddLegendEntry(row, "SPACE", "Attack");
+		AddLegendEntry(row, "R", "Regenerate");
+		AddLegendEntry(row, "ESC", "Pause");
 
 		Vector2 size = panel.GetCombinedMinimumSize();
 		Vector2 viewportSize = GetViewport().GetVisibleRect().Size;
-		panel.Position = new Vector2(20, viewportSize.Y - 18 - size.Y);
+		panel.Position = new Vector2(20, viewportSize.Y - 16 - size.Y);
 	}
 
 	private void BuildPauseMenu()
