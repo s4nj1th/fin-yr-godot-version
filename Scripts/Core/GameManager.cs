@@ -129,6 +129,8 @@ public partial class GameManager : Node3D
 	private readonly AdaptationDirector _adaptationDirector = new();
 	private Vector2I _playerFacing = Vector2I.Down;
 	private bool _anyEnemyTrackingLastFrame;
+	private bool _debugRearDefenseWasActive;
+	private bool _debugStealthWasActive;
 	private double _sinceLastAttackSeconds = double.MaxValue;
 	private int _nearestEnemyDistanceBeforeMove = int.MaxValue;
 	private const double KitingWindowSeconds = 2.0;
@@ -226,6 +228,9 @@ public partial class GameManager : Node3D
 			_playerTelemetry.RecordLineOfSightBreak();
 			_playerProfile.Update(_playerTelemetry);
 			_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+			GD.Print($"[AdaptiveAI] Line-of-sight break #{_playerTelemetry.LineOfSightBreaks} recorded — " +
+				$"StealthPreference={_playerProfile.StealthPreference:F2} Confidence={_playerProfile.Confidence:F2}");
+			LogAdaptationTransitions();
 		}
 
 		_playerTelemetry.RecordProximityTick(delta, hiddenFromAwareEnemy: anyEnemyHiddenFromAware, observedByAnyEnemy: anyEnemyTrackingNow);
@@ -239,6 +244,29 @@ public partial class GameManager : Node3D
 			_playerTelemetry.RecordEncounterEnded();
 		}
 		_anyEnemyTrackingLastFrame = anyEnemyTrackingNow;
+	}
+
+	// Debug visibility only — docs/ENEMY_AI_ADAPTATION_PLAN.md section 6
+	// recommends exposing the profile in a debug panel during development;
+	// this is the console-log equivalent, printed only on the actual
+	// activate/deactivate transition rather than every frame.
+	private void LogAdaptationTransitions()
+	{
+		if (_adaptationDirector.RearDefenseActive != _debugRearDefenseWasActive)
+		{
+			_debugRearDefenseWasActive = _adaptationDirector.RearDefenseActive;
+			GD.Print(_debugRearDefenseWasActive
+				? "[AdaptiveAI] Rear-defense countermeasure ACTIVATED — newly spawned enemies will react faster to rear hits."
+				: "[AdaptiveAI] Rear-defense countermeasure deactivated (player's tactics shifted away from rear attacks).");
+		}
+
+		if (_adaptationDirector.StealthCountermeasureActive != _debugStealthWasActive)
+		{
+			_debugStealthWasActive = _adaptationDirector.StealthCountermeasureActive;
+			GD.Print(_debugStealthWasActive
+				? "[AdaptiveAI] Stealth countermeasure ACTIVATED — newly spawned enemies will investigate your last known position."
+				: "[AdaptiveAI] Stealth countermeasure deactivated (player's tactics shifted away from breaking line of sight).");
+		}
 	}
 
 	private async Task RequestNextGenomeAsync()
@@ -998,8 +1026,14 @@ void fragment() {
 		// spawned this cycle — the first milestone (section 15) only ever
 		// adapts newly spawned enemies, never retasks an enemy already alive.
 		_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+		if (_adaptationDirector.RearDefenseActive || _adaptationDirector.StealthCountermeasureActive)
+		{
+			GD.Print($"[AdaptiveAI] Spawning this dungeon's enemies with RearDefenseActive={_adaptationDirector.RearDefenseActive} " +
+				$"StealthCountermeasureActive={_adaptationDirector.StealthCountermeasureActive}");
+		}
 
 		int maxEnemies = Mathf.Min(spawnPoints.Count, 120);
+		int adaptedSpawnCount = 0;
 		for (int i = 0; i < maxEnemies; i++)
 		{
 			EnemyClassDefinition definition = CreateEnemyDefinitionForRoll(_rng.Randf(), difficultyScale);
@@ -1012,6 +1046,16 @@ void fragment() {
 			enemy.EnemyAttackedPlayer += OnEnemyAttackedPlayer;
 			_enemyRoot.AddChild(enemy);
 			_enemies.Add(enemy);
+
+			if (enemy.TacticalOrder.GuardRear || enemy.TacticalOrder.SearchLastKnownPosition)
+			{
+				adaptedSpawnCount++;
+			}
+		}
+
+		if (adaptedSpawnCount > 0)
+		{
+			GD.Print($"[AdaptiveAI] {adaptedSpawnCount}/{maxEnemies} enemies spawned with an active tactical order this dungeon.");
 		}
 	}
 
@@ -1173,6 +1217,10 @@ void fragment() {
 		_playerTelemetry.RecordAttack(hit: true, direction);
 		_playerProfile.Update(_playerTelemetry);
 		_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+		GD.Print($"[AdaptiveAI] Attack on {target.ClassDefinition.ClassId} classified {direction} " +
+			$"(targetWasAware={targetWasAware}) — attacks={_playerTelemetry.Attacks} rear={_playerTelemetry.BackAttacks} " +
+			$"BackAttackPreference={_playerProfile.BackAttackPreference:F2} Confidence={_playerProfile.Confidence:F2}");
+		LogAdaptationTransitions();
 		_sinceLastAttackSeconds = 0.0;
 
 		int damage = Math.Max(1, _playerStats.Attack - target.Stats.Defense);
