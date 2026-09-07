@@ -8,4 +8,12 @@
   <ItemGroup>
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Tests/ is its own standalone xunit project (DungeonCrawler.AI.Tests.csproj)
+         so the Godot-free AI logic under Scripts/AI can be unit-tested without
+         the Godot engine — exclude it here so the default SDK glob doesn't also
+         try to compile its xunit-dependent files into the game itself. -->
+    <Compile Remove="Tests/**/*.cs" />
+    <None Remove="Tests/**/*.cs" />
+  </ItemGroup>
 </Project>

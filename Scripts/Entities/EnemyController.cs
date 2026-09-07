@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using DungeonCrawler.AI;
 using DungeonCrawler.Data;
 
 namespace DungeonCrawler.Entities;
@@ -18,6 +19,20 @@ public partial class EnemyController : Node3D
 	public int CurrentHp { get; private set; }
 	public int MaxHp => Stats.MaxHp;
 	public Vector2 WorldOffset { get; set; } = Vector2.Zero;
+
+	// --- Adaptive AI (docs/ENEMY_AI_ADAPTATION_PLAN.md) ---
+	// Perception is tracked for every enemy regardless of whether it has an
+	// active tactical order — it's cheap and keeps the belief state ready
+	// for whatever order a later spawn might carry. Only enemies that
+	// actually received an order from the AdaptationDirector let that
+	// belief state change their movement (see ChooseNextStep); a baseline
+	// enemy with no order behaves exactly as before, unchanged difficulty.
+	public EnemyPerception Perception { get; } = new();
+	public EnemyTacticalOrder TacticalOrder { get; set; } = EnemyTacticalOrder.None();
+
+	private readonly RandomNumberGenerator _searchRng = new();
+	private PerceptionState _previousPerceptionState = PerceptionState.Unaware;
+	private bool _lineOfSightJustLost;
 
 	private const int AiGridSize = 8;
 
@@ -56,7 +71,7 @@ public partial class EnemyController : Node3D
 		RefreshAiGridVisualization();
 	}
 
-	public void TakeDamage(int rawDamage)
+	public void TakeDamage(int rawDamage, AttackDirection direction = AttackDirection.Front)
 	{
 		if (CurrentHp <= 0 || _isDying)
 		{
@@ -66,6 +81,18 @@ public partial class EnemyController : Node3D
 		int mitigated = Math.Max(1, rawDamage - Stats.Defense);
 		CurrentHp = Math.Max(0, CurrentHp - mitigated);
 		PlayHitFlash();
+
+		// Rear-defense countermeasure (docs/ENEMY_AI_ADAPTATION_PLAN.md
+		// section 10): "turn toward the player faster" is implemented as a
+		// faster re-engage — a rear hit while GuardRear is active cuts the
+		// remaining attack cooldown, since this game has no separate facing
+		// rotation to literally turn. Only fires for genuinely-Rear hits,
+		// not Front/Side, so it doesn't just make the enemy hit harder
+		// across the board.
+		if (TacticalOrder.GuardRear && direction == AttackDirection.Rear && CurrentHp > 0)
+		{
+			_attackCooldown = Math.Max(0.0, _attackCooldown / Math.Max(1f, TacticalOrder.TurnSpeedMultiplier));
+		}
 
 		if (CurrentHp <= 0)
 		{
@@ -80,6 +107,26 @@ public partial class EnemyController : Node3D
 		{
 			return;
 		}
+
+		// Perception updates every frame, independent of the movement step
+		// delay below — awareness/last-known-position shouldn't lag behind
+		// by up to a full step just because the enemy hasn't chosen to move.
+		int manhattanDistance = Math.Abs(playerPos.X - GridPos.X) + Math.Abs(playerPos.Y - GridPos.Y);
+		// Cheap distance check before the O(distance) Bresenham trace below —
+		// with up to 120 enemies on the map and only a handful ever within
+		// VisionRange (4-6 tiles) of the player at once, skipping the trace
+		// entirely for the rest is the difference between this running every
+		// frame comfortably and pegging the CPU tracing lines for enemies
+		// nowhere near seeing the player anyway.
+		bool withinVisionRange = manhattanDistance <= Stats.VisionRange;
+		bool hasLineOfSight = withinVisionRange && GridLineOfSight.HasLineOfSight(ToGridPoint(GridPos), ToGridPoint(playerPos), walkableGrid);
+		Perception.Update(delta, hasLineOfSight, ToGridPoint(playerPos), manhattanDistance, Stats.VisionRange);
+
+		if (_previousPerceptionState == PerceptionState.Tracking && Perception.State != PerceptionState.Tracking)
+		{
+			_lineOfSightJustLost = true;
+		}
+		_previousPerceptionState = Perception.State;
 
 		_aiTimer += delta;
 		_attackCooldown = Math.Max(0.0, _attackCooldown - delta);
@@ -144,6 +191,23 @@ public partial class EnemyController : Node3D
 
 	public Vector2I ChooseNextStep(Vector2I playerPos, int[,] walkableGrid)
 	{
+		// Adaptive stealth countermeasure (docs/ENEMY_AI_ADAPTATION_PLAN.md
+		// sections 7 and 11): only enemies that actually received the
+		// SearchLastKnownPosition order deviate from the baseline behavior
+		// below, and only while they've genuinely lost the player — an
+		// enemy currently Tracking (has line of sight) still just chases
+		// normally. This keeps every enemy without an active order, and
+		// every enemy that still sees the player, exactly as before.
+		if (TacticalOrder.SearchLastKnownPosition
+			&& Perception.State is PerceptionState.Investigating or PerceptionState.Searching)
+		{
+			Vector2I investigateStep = ChooseInvestigateOrSearchStep(walkableGrid);
+			if (investigateStep != Vector2I.Zero)
+			{
+				return investigateStep;
+			}
+		}
+
 		int distanceX = playerPos.X - GridPos.X;
 		int distanceY = playerPos.Y - GridPos.Y;
 		int manhattanDistance = Math.Abs(distanceX) + Math.Abs(distanceY);
@@ -235,6 +299,69 @@ public partial class EnemyController : Node3D
 
 		return Vector2I.Zero;
 	}
+
+	// Routes toward the last place the player was seen (Investigating), or
+	// once there without success, toward a nearby unsearched cell
+	// (Searching) — the pathfinding investigate/search behavior from
+	// docs/ENEMY_AI_ADAPTATION_PLAN.md sections 7, 11, and 12. BFS is
+	// recomputed each call rather than cached: it only runs for the
+	// (typically few) enemies actively investigating, at their normal
+	// movement cadence, which is cheap enough not to need caching.
+	private Vector2I ChooseInvestigateOrSearchStep(int[,] walkableGrid)
+	{
+		GridPoint here = ToGridPoint(GridPos);
+		GridPoint target = Perception.State == PerceptionState.Investigating
+			? Perception.LastKnownPlayerPosition
+			: PickSearchTarget(walkableGrid);
+
+		if (target == here)
+		{
+			if (Perception.State == PerceptionState.Searching)
+			{
+				Perception.MarkCellSearched(here);
+			}
+			return Vector2I.Zero;
+		}
+
+		GridPoint stepDirection = GridPathfinder.FindNextStepDirection(here, target, walkableGrid);
+		return ToVector2I(stepDirection);
+	}
+
+	private GridPoint PickSearchTarget(int[,] walkableGrid)
+	{
+		GridPoint center = Perception.LastKnownPlayerPosition;
+		int radius = Math.Max(1, Mathf.RoundToInt(TacticalOrder.SearchRadius));
+
+		for (int attempt = 0; attempt < 8; attempt++)
+		{
+			int offsetX = _searchRng.RandiRange(-radius, radius);
+			int offsetY = _searchRng.RandiRange(-radius, radius);
+			var candidate = new GridPoint(center.X + offsetX, center.Y + offsetY);
+
+			if (Perception.SearchedCells.Contains(candidate) || !IsWalkable(ToVector2I(candidate), walkableGrid))
+			{
+				continue;
+			}
+
+			return candidate;
+		}
+
+		// Nothing new nearby — fall back to the last known position itself
+		// so the enemy at least ends up somewhere sensible.
+		return center;
+	}
+
+	/// <summary>Reads and clears the "line of sight lost this frame" flag — call once per frame from GameManager.</summary>
+	public bool ConsumeLineOfSightLostFlag()
+	{
+		bool value = _lineOfSightJustLost;
+		_lineOfSightJustLost = false;
+		return value;
+	}
+
+	private static GridPoint ToGridPoint(Vector2I v) => new(v.X, v.Y);
+
+	private static Vector2I ToVector2I(GridPoint p) => new(p.X, p.Y);
 
 	private bool IsRanged => BehaviorType.StartsWith("ranged", StringComparison.Ordinal);
 

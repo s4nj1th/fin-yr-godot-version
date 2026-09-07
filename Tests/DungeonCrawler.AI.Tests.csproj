@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Only the pure-logic AI classes are compiled in directly (not
+         ProjectReference-d) so this test project never needs the Godot
+         engine, editor tooling, or Godot.NET.Sdk import/export pipeline.
+         Scripts/AI/*.cs must stay free of any Godot type reference (even
+         unused ones) — GodotSharp's types require the actual engine
+         process and crash a plain `dotnet test` host; that's why GridPoint
+         exists instead of using Godot.Vector2I directly here. -->
+    <Compile Include="../Scripts/AI/*.cs" />
+  </ItemGroup>
+
+</Project>

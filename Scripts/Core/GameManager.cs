@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Godot;
+using DungeonCrawler.AI;
 using DungeonCrawler.Data;
 using DungeonCrawler.Entities;
 using DungeonCrawler.Network;
@@ -117,12 +118,29 @@ public partial class GameManager : Node3D
 	private int _trialTotalChests;
 	private bool _trialReported;
 
+	// --- Adaptive enemy AI (docs/ENEMY_AI_ADAPTATION_PLAN.md) ---
+	// Unlike the _trial* counters above (which reset every regeneration and
+	// feed the evolutionary-loop backend), these persist for the whole play
+	// session — the player's demonstrated habits should accumulate across
+	// dungeon visits, not reset every time a trial ends (section 1: "learn
+	// tendencies from evidence," not from one run in isolation).
+	private readonly PlayerBehaviorTelemetry _playerTelemetry = new();
+	private readonly PlayerPlaystyleProfile _playerProfile = new();
+	private readonly AdaptationDirector _adaptationDirector = new();
+	private Vector2I _playerFacing = Vector2I.Down;
+	private bool _anyEnemyTrackingLastFrame;
+	private double _sinceLastAttackSeconds = double.MaxValue;
+	private int _nearestEnemyDistanceBeforeMove = int.MaxValue;
+	private const double KitingWindowSeconds = 2.0;
+
 	public int PlayerCurrentHp => _playerCurrentHp;
 	public int PlayerMaxHp => _playerStats.MaxHp;
 	public int Score => _score;
 	public string? LastTrialResultMessage { get; private set; }
 	public Vector2I PlayerGridPosition => _playerPos;
 	public Vector2I ExitGridPosition => _exitPos;
+	public Vector2I PlayerFacingDirection => _playerFacing;
+	public string PlaystyleDebugSummary => _playerProfile.DebugSummary();
 
 	public override void _Ready()
 	{
@@ -156,11 +174,17 @@ public partial class GameManager : Node3D
 			return;
 		}
 
+		_adaptationDirector.Tick(delta);
+		_sinceLastAttackSeconds += delta;
+
 		HandlePlayerInput(delta);
 		HandlePlayerAttack(delta);
 		HandleStandingTileEffects(delta);
 		UpdateTileVisibility();
 		UpdateCameraPosition();
+
+		bool anyEnemyTrackingNow = false;
+		bool anyEnemyHiddenFromAware = false;
 
 		for (int i = _enemies.Count - 1; i >= 0; i--)
 		{
@@ -174,7 +198,36 @@ public partial class GameManager : Node3D
 			}
 
 			enemy.Tick(delta, _playerPos, _tiles);
+
+			if (enemy.ConsumeLineOfSightLostFlag())
+			{
+				_playerTelemetry.RecordLineOfSightBreak();
+				_playerProfile.Update(_playerTelemetry);
+				_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+			}
+
+			switch (enemy.Perception.State)
+			{
+				case PerceptionState.Tracking:
+					anyEnemyTrackingNow = true;
+					break;
+				case PerceptionState.Investigating or PerceptionState.Searching:
+					anyEnemyHiddenFromAware = true;
+					break;
+			}
 		}
+
+		_playerTelemetry.RecordProximityTick(delta, hiddenFromAwareEnemy: anyEnemyHiddenFromAware, observedByAnyEnemy: anyEnemyTrackingNow);
+
+		if (anyEnemyTrackingNow && !_anyEnemyTrackingLastFrame)
+		{
+			_playerTelemetry.RecordEncounterStarted();
+		}
+		else if (!anyEnemyTrackingNow && _anyEnemyTrackingLastFrame)
+		{
+			_playerTelemetry.RecordEncounterEnded();
+		}
+		_anyEnemyTrackingLastFrame = anyEnemyTrackingNow;
 	}
 
 	private async Task RequestNextGenomeAsync()
@@ -231,6 +284,9 @@ public partial class GameManager : Node3D
 
 		try
 		{
+			float explorationPercent = ComputeExplorationPercent();
+			_playerProfile.UpdateExploration(explorationPercent);
+
 			var telemetry = new TelemetryMetrics
 			{
 				TimeTakenSec = (float)_trialElapsedSeconds,
@@ -242,7 +298,7 @@ public partial class GameManager : Node3D
 				ChestsOpened = _trialChestsOpened,
 				TotalChests = _trialTotalChests,
 				TrapsTriggered = _trialTrapsTriggered,
-				ExplorationPercent = ComputeExplorationPercent(),
+				ExplorationPercent = explorationPercent,
 				ExitReached = exitReached,
 				QuitEarly = quitEarly
 			};
@@ -927,6 +983,11 @@ void fragment() {
 			}
 		}
 
+		// Orders are decided once per regeneration and handed to every enemy
+		// spawned this cycle — the first milestone (section 15) only ever
+		// adapts newly spawned enemies, never retasks an enemy already alive.
+		_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+
 		int maxEnemies = Mathf.Min(spawnPoints.Count, 120);
 		for (int i = 0; i < maxEnemies; i++)
 		{
@@ -936,6 +997,7 @@ void fragment() {
 			enemy.WorldOffset = worldOffset;
 			enemy.Initialize(spawnPoints[i], definition.Behavior, definition);
 			enemy.Position = GridToWorld(spawnPoints[i]) + new Vector3(0, 0.4f, 0);
+			enemy.TacticalOrder = _adaptationDirector.CreateOrderForNewEnemy(_playerProfile);
 			enemy.EnemyAttackedPlayer += OnEnemyAttackedPlayer;
 			_enemyRoot.AddChild(enemy);
 			_enemies.Add(enemy);
@@ -1005,15 +1067,50 @@ void fragment() {
 			return;
 		}
 
+		// docs/ENEMY_AI_ADAPTATION_PLAN.md section 4: "update it whenever a
+		// valid movement input is applied" — a legitimate single-axis
+		// direction counts even if the move into it is then blocked (the
+		// player is still facing that way).
+		_playerFacing = direction;
+
 		Vector2I nextPos = _playerPos + direction;
 		if (IsWalkable(nextPos))
 		{
+			int distanceBefore = ComputeNearestEnemyDistance(_playerPos);
 			_playerPos = nextPos;
 			SetPlayerWorldPosition();
 			HandleTileEffect();
+
+			int distanceAfter = ComputeNearestEnemyDistance(_playerPos);
+			if (distanceBefore != int.MaxValue && distanceAfter > distanceBefore)
+			{
+				bool wasKiting = _sinceLastAttackSeconds <= KitingWindowSeconds;
+				_playerTelemetry.RecordRetreat(wasKiting);
+				_playerProfile.Update(_playerTelemetry);
+			}
 		}
 
 		_moveTimer = 0;
+	}
+
+	private int ComputeNearestEnemyDistance(Vector2I from)
+	{
+		int best = int.MaxValue;
+		foreach (EnemyController enemy in _enemies)
+		{
+			if (enemy.CurrentHp <= 0)
+			{
+				continue;
+			}
+
+			int distance = Math.Abs(enemy.GridPos.X - from.X) + Math.Abs(enemy.GridPos.Y - from.Y);
+			if (distance < best)
+			{
+				best = distance;
+			}
+		}
+
+		return best;
 	}
 
 	private void HandlePlayerAttack(double delta)
@@ -1057,15 +1154,28 @@ void fragment() {
 
 		PlayPlayerAttackFx(target.Position);
 
+		Vector2I toTarget = target.GridPos - _playerPos;
+		bool targetWasAware = target.Perception.State != PerceptionState.Unaware;
+		AttackDirection direction = AttackDirectionClassifier.Classify(
+			ToGridPoint(_playerFacing), ToGridPoint(toTarget), targetWasAware);
+
+		_playerTelemetry.RecordAttack(hit: true, direction);
+		_playerProfile.Update(_playerTelemetry);
+		_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+		_sinceLastAttackSeconds = 0.0;
+
 		int damage = Math.Max(1, _playerStats.Attack - target.Stats.Defense);
-		target.TakeDamage(damage);
+		target.TakeDamage(damage, direction);
 
 		if (target.CurrentHp <= 0)
 		{
 			_score += target.Stats.Reward;
 			_trialEnemiesKilled++;
+			_playerTelemetry.RecordEnemyKilled();
 		}
 	}
+
+	private static GridPoint ToGridPoint(Vector2I v) => new(v.X, v.Y);
 
 	private void PlayPlayerAttackFx(Vector3 targetWorldPos)
 	{
@@ -1106,6 +1216,7 @@ void fragment() {
 		int mitigated = Math.Max(1, rawDamage - _playerStats.Defense);
 		_playerCurrentHp = Math.Max(0, _playerCurrentHp - mitigated);
 		_trialDamageTaken += mitigated;
+		_playerTelemetry.RecordPlayerDamaged();
 
 		if (_playerCurrentHp <= 0)
 		{
