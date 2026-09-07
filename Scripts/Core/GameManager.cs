@@ -101,11 +101,6 @@ public partial class GameManager : Node3D
 	// telemetry to the Python backend under Backend/ and fetch the next
 	// genome. If the backend isn't running, everything falls back to the
 	// default local genome — the backend is optional.
-	// --- Evolutionary-algorithm backend integration (Phase 1: naive human-coupled MCC) ---
-	// See Idea/Idea.md. Each "trial" is one dungeon generated from a genome; when it ends
-	// (exit reached, manual regenerate, or timeout) we report pass/fail telemetry to the
-	// Python backend under Backend/ and fetch the next genome. If the backend isn't running,
-	// everything falls back to today's default local behavior — the backend is optional.
 	private const double MaxTrialSeconds = 240.0; // mirrors Backend/config.py MAX_TRIAL_SECONDS
 	private ApiClient _apiClient = null!;
 	private GenomeData _currentGenome = GenomeData.CreateDefault();
@@ -635,10 +630,6 @@ public partial class GameManager : Node3D
 		// Rolling per-room instead of a fixed i%4 cycle makes these ratios
 		// continuously evolvable — the default genome (0.25 each) reproduces
 		// the original even split. See docs/EVOLUTIONARY_DESIGN.md.
-		// Genome-driven: each room independently rolls for its special tile type based
-		// on the current genome's density parameters (Backend/genome.py). Rolling
-		// per-room instead of a fixed i%4 cycle makes these ratios continuously
-		// evolvable — the default genome (0.25 each) reproduces the old even split.
 		GenomeParams genomeParams = _currentGenome.Params;
 		float trapCut = Mathf.Clamp(genomeParams.TrapDensity, 0f, 1f);
 		float chestCut = trapCut + Mathf.Clamp(genomeParams.ChestDensity, 0f, 1f);

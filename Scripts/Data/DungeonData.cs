@@ -187,7 +187,6 @@ public class TelemetryMetrics
 // A genome is a flat set of dungeon-generation + encounter parameters that the
 // Python MCC backend evolves. See docs/EVOLUTIONARY_DESIGN.md for the design
 // rationale (genotype, mutation, minimal criterion, surrogate gating).
-// Python MCC backend evolves. See Idea/Idea.md section 5.2 for the design rationale.
 
 public class GenomeParams
 {

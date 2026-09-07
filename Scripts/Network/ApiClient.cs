@@ -11,8 +11,6 @@ public partial class ApiClient : Node
 {
 	// Matches the evolutionary-loop backend under Backend/ (run with
 	// `uvicorn main:app --port 8000`, see Backend/README.md).
-	// Matches LLM_SERVER_URL in .env.example, and the Phase-1 MCC backend
-	// under Backend/ (run with `uvicorn main:app --port 8000`).
 	[Export] public string BaseUrl { get; set; } = "http://localhost:8000";
 
 	private readonly System.Net.Http.HttpClient _client = new()
@@ -67,7 +65,6 @@ public partial class ApiClient : Node
 	}
 
 	// --- Evolutionary-loop backend (Backend/main.py) ---
-	// --- Phase-1 MCC backend (Backend/main.py) ---
 
 	public async Task<NextCandidateResponse?> RequestNextGenomeAsync()
 	{
@@ -82,7 +79,6 @@ public partial class ApiClient : Node
 		catch (Exception ex)
 		{
 			GD.Print($"[ApiClient] Evolution backend unavailable for /api/next_candidate ({ex.Message}) — falling back to local default genome.");
-			GD.Print($"[ApiClient] MCC backend unavailable for /api/next_candidate ({ex.Message}) — falling back to local default genome.");
 			return null;
 		}
 	}
@@ -103,7 +99,6 @@ public partial class ApiClient : Node
 		catch (Exception ex)
 		{
 			GD.Print($"[ApiClient] Evolution backend unavailable for /api/report_outcome ({ex.Message}) — trial outcome not recorded.");
-			GD.Print($"[ApiClient] MCC backend unavailable for /api/report_outcome ({ex.Message}) — trial outcome not recorded.");
 			return null;
 		}
 	}
