@@ -101,3 +101,11 @@ web-version/
 # Research/planning docs (not part of the shipped project)
 # ==========================================
 Idea/
+
+# ==========================================
+# Python EA backend (Backend/) — code is tracked, runtime state is not
+# ==========================================
+Backend/.venv/
+Backend/__pycache__/
+Backend/**/__pycache__/
+Backend/data/

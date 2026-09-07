@@ -9,9 +9,14 @@ namespace DungeonCrawler.Network;
 
 public partial class ApiClient : Node
 {
-	[Export] public string BaseUrl { get; set; } = "http://localhost:8080";
-	
-	private readonly System.Net.Http.HttpClient _client = new();
+	// Matches LLM_SERVER_URL in .env.example, and the Phase-1 MCC backend
+	// under Backend/ (run with `uvicorn main:app --port 8000`).
+	[Export] public string BaseUrl { get; set; } = "http://localhost:8000";
+
+	private readonly System.Net.Http.HttpClient _client = new()
+	{
+		Timeout = TimeSpan.FromSeconds(5)
+	};
 
 	public async Task<DungeonMapData?> GenerateMapAsync(string prompt = "", DungeonConfig? config = null)
 	{
@@ -55,6 +60,45 @@ public partial class ApiClient : Node
 		catch (Exception ex)
 		{
 			GD.PrintErr($"[ApiClient] Error calling /api/adapt: {ex.Message}");
+			return null;
+		}
+	}
+
+	// --- Phase-1 MCC backend (Backend/main.py) ---
+
+	public async Task<NextCandidateResponse?> RequestNextGenomeAsync()
+	{
+		try
+		{
+			HttpResponseMessage response = await _client.PostAsync($"{BaseUrl}/api/next_candidate", null);
+			response.EnsureSuccessStatusCode();
+
+			string responseBody = await response.Content.ReadAsStringAsync();
+			return JsonSerializer.Deserialize<NextCandidateResponse>(responseBody);
+		}
+		catch (Exception ex)
+		{
+			GD.Print($"[ApiClient] MCC backend unavailable for /api/next_candidate ({ex.Message}) — falling back to local default genome.");
+			return null;
+		}
+	}
+
+	public async Task<ReportOutcomeResponse?> ReportOutcomeAsync(ReportOutcomeRequest request)
+	{
+		try
+		{
+			string jsonString = JsonSerializer.Serialize(request);
+			var content = new StringContent(jsonString, Encoding.UTF8, "application/json");
+
+			HttpResponseMessage response = await _client.PostAsync($"{BaseUrl}/api/report_outcome", content);
+			response.EnsureSuccessStatusCode();
+
+			string responseBody = await response.Content.ReadAsStringAsync();
+			return JsonSerializer.Deserialize<ReportOutcomeResponse>(responseBody);
+		}
+		catch (Exception ex)
+		{
+			GD.Print($"[ApiClient] MCC backend unavailable for /api/report_outcome ({ex.Message}) — trial outcome not recorded.");
 			return null;
 		}
 	}

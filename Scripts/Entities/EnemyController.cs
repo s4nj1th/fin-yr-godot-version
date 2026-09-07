@@ -20,6 +20,18 @@ public partial class EnemyController : Node3D
 	public Vector2 WorldOffset { get; set; } = Vector2.Zero;
 
 	private const int AiGridSize = 8;
+
+	// --- Tunable AI attack-pattern parameters (grid distances in tiles) ---
+	// Tweak these to change how each behavior "feels" without touching logic below.
+	private const int MeleeEngageBuffer = 1;      // melee enemies stop chasing this many tiles before Stats.AttackRange
+	private const int KiteRetreatDistance = 3;    // ranged_kite: closer than this -> back away
+	private const int KiteAdvanceDistance = 5;    // ranged_kite: farther than this -> close in
+	private const int StrafeRetreatDistance = 3;  // ranged_strafe: closer than this -> back away
+	private const int StrafeAdvanceDistance = 6;  // ranged_strafe: farther than this -> close in
+	private const int PostAttackRetreatSteps = 2; // melee_hit_run / ranged_kite: steps to disengage after landing a hit
+	private const int PostAttackStrafeSteps = 2;  // ranged_strafe: steps to strafe after landing a hit
+	private const double AttackCooldownSeconds = 0.85;
+
 	private readonly List<MeshInstance3D> _pixelCells = new();
 	private MeshInstance3D _body = null!;
 	private StandardMaterial3D _bodyMaterial = null!;
@@ -139,19 +151,7 @@ public partial class EnemyController : Node3D
 
 		if (_attackCooldown <= 0.0 && manhattanDistance <= attackDistance)
 		{
-			EmitSignal(SignalName.EnemyAttackedPlayer, Stats.Attack);
-			_attackCooldown = 0.85;
-			if (BehaviorType is "melee_hit_run" or "ranged_kite")
-			{
-				_postAttackRetreat = true;
-				_postAttackSteps = 2;
-			}
-			else if (BehaviorType == "ranged_strafe")
-			{
-				_postAttackRetreat = false;
-				_postAttackSteps = 2;
-				_strafeSign *= -1;
-			}
+			ExecuteAttack(playerPos);
 		}
 
 		Vector2I[] directions =
@@ -192,12 +192,12 @@ public partial class EnemyController : Node3D
 
 		if (BehaviorType == "ranged_kite")
 		{
-			if (manhattanDistance < 3)
+			if (manhattanDistance < KiteRetreatDistance)
 			{
 				return FindBestStep(playerPos, walkableGrid, directions, preferCloser: false);
 			}
 
-			if (manhattanDistance > 5)
+			if (manhattanDistance > KiteAdvanceDistance)
 			{
 				return FindBestStep(playerPos, walkableGrid, directions, preferCloser: true);
 			}
@@ -207,12 +207,12 @@ public partial class EnemyController : Node3D
 
 		if (BehaviorType == "ranged_strafe")
 		{
-			if (manhattanDistance > 6)
+			if (manhattanDistance > StrafeAdvanceDistance)
 			{
 				return FindBestStep(playerPos, walkableGrid, directions, preferCloser: true);
 			}
 
-			if (manhattanDistance < 3)
+			if (manhattanDistance < StrafeRetreatDistance)
 			{
 				return FindBestStep(playerPos, walkableGrid, directions, preferCloser: false);
 			}
@@ -236,9 +236,90 @@ public partial class EnemyController : Node3D
 		return Vector2I.Zero;
 	}
 
+	private bool IsRanged => BehaviorType.StartsWith("ranged", StringComparison.Ordinal);
+
 	private int GetAttackDistance()
 	{
-		return BehaviorType.StartsWith("ranged", StringComparison.Ordinal) ? 4 : Stats.AttackRange + 1;
+		return IsRanged ? Stats.AttackRange : Stats.AttackRange + MeleeEngageBuffer;
+	}
+
+	private void ExecuteAttack(Vector2I playerPos)
+	{
+		EmitSignal(SignalName.EnemyAttackedPlayer, Stats.Attack);
+		_attackCooldown = AttackCooldownSeconds;
+		PlayAttackFx(playerPos);
+
+		if (BehaviorType is "melee_hit_run" or "ranged_kite")
+		{
+			_postAttackRetreat = true;
+			_postAttackSteps = PostAttackRetreatSteps;
+		}
+		else if (BehaviorType == "ranged_strafe")
+		{
+			_postAttackRetreat = false;
+			_postAttackSteps = PostAttackStrafeSteps;
+			_strafeSign *= -1;
+		}
+	}
+
+	private void PlayAttackFx(Vector2I playerPos)
+	{
+		if (IsRanged)
+		{
+			PlayRangedAttackFx(playerPos);
+		}
+		else
+		{
+			PlayMeleeAttackFx(playerPos);
+		}
+	}
+
+	private void PlayMeleeAttackFx(Vector2I playerPos)
+	{
+		Vector2I toPlayer = playerPos - GridPos;
+		Vector3 direction = new Vector3(toPlayer.X, 0, toPlayer.Y);
+		if (direction.LengthSquared() > 0.0001f)
+		{
+			direction = direction.Normalized();
+		}
+
+		Vector3 lungeOffset = direction * 0.32f;
+
+		Tween tween = CreateTween();
+		tween.TweenProperty(_body, "position", lungeOffset, 0.08).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		tween.TweenProperty(_body, "position", Vector3.Zero, 0.12).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.In);
+	}
+
+	private void PlayRangedAttackFx(Vector2I playerPos)
+	{
+		Node? parent = GetParent();
+		if (parent == null)
+		{
+			return;
+		}
+
+		Vector3 start = Position + new Vector3(0, 0.15f, 0);
+		Vector3 end = new Vector3(playerPos.X + WorldOffset.X, 0.5f, playerPos.Y + WorldOffset.Y);
+		Color color = GetClassColor();
+
+		var projectile = new MeshInstance3D
+		{
+			Mesh = new SphereMesh { Radius = 0.08f, Height = 0.16f },
+			MaterialOverride = new StandardMaterial3D
+			{
+				AlbedoColor = color,
+				EmissionEnabled = true,
+				Emission = color,
+				EmissionEnergyMultiplier = 2.0f
+			},
+			Position = start
+		};
+
+		parent.AddChild(projectile);
+
+		Tween tween = projectile.CreateTween();
+		tween.TweenProperty(projectile, "position", end, 0.18).SetTrans(Tween.TransitionType.Linear);
+		tween.TweenCallback(Callable.From(projectile.QueueFree));
 	}
 
 	private Vector2I FindBestStep(Vector2I playerPos, int[,] walkableGrid, Vector2I[] directions, bool preferCloser)
