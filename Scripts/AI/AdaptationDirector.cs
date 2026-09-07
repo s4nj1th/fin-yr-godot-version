@@ -41,6 +41,11 @@ public sealed class AdaptationDirector
     private const float MinPreferenceRatioToAvoidDilution = 0.35f;
 
     private const double AdaptationCooldownSeconds = 8.0;
+    // Section 9's "minimum tactic duration" safeguard, distinct from the
+    // reactivation cooldown above even though they share the same timer
+    // field (see the comment at its use site) — kept as one named
+    // constant so the two concepts are still visible as separate reasons.
+    private const double MinTacticDurationSeconds = AdaptationCooldownSeconds;
     private const float MaxTurnSpeedMultiplier = 2.0f;
     private const float MinTacticCoverage = 0.3f;  // even a fully-confident profile doesn't make every enemy react
     private const float MaxTacticCoverage = 0.9f;
@@ -84,10 +89,16 @@ public sealed class AdaptationDirector
             RearDefenseActive = true;
             _timeSinceLastRearAdaptation = 0.0;
         }
-        else if (!rearEvidenceMet && RearDefenseActive)
+        else if (!rearEvidenceMet && RearDefenseActive && _timeSinceLastRearAdaptation >= MinTacticDurationSeconds)
         {
             // Profile decayed back down (player changed tactics) — matches
-            // section 9's "tactic decay when the player changes style."
+            // section 9's "tactic decay when the player changes style." The
+            // MinTacticDurationSeconds floor is section 9's separate
+            // "minimum tactic duration" safeguard: a single stray
+            // observation right after activation can't immediately flip it
+            // back off — _timeSinceLastRearAdaptation is reused here as
+            // "time since this last turned on," doing double duty as both
+            // the reactivation cooldown above and this deactivation floor.
             RearDefenseActive = false;
         }
 
@@ -99,7 +110,7 @@ public sealed class AdaptationDirector
             StealthCountermeasureActive = true;
             _timeSinceLastStealthAdaptation = 0.0;
         }
-        else if (!stealthEvidenceMet && StealthCountermeasureActive)
+        else if (!stealthEvidenceMet && StealthCountermeasureActive && _timeSinceLastStealthAdaptation >= MinTacticDurationSeconds)
         {
             StealthCountermeasureActive = false;
         }

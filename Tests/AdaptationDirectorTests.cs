@@ -44,7 +44,6 @@ public class AdaptationDirectorTests
     [Fact]
     public void CreateOrderForNewEnemy_NeverAssignsGuardRear_WhenRearDefenseIsInactive()
     {
-        var telemetry = new PlayerBehaviorTelemetry();
         var profile = new PlayerPlaystyleProfile();
         var director = new AdaptationDirector();
 
@@ -79,7 +78,7 @@ public class AdaptationDirectorTests
     }
 
     [Fact]
-    public void Reevaluate_DeactivatesRearDefense_AfterProfileDecaysBelowThreshold()
+    public void Reevaluate_DeactivatesRearDefense_AfterProfileDecaysBelowThreshold_OnceMinDurationHasPassed()
     {
         var telemetry = new PlayerBehaviorTelemetry();
         var profile = new PlayerPlaystyleProfile();
@@ -93,6 +92,10 @@ public class AdaptationDirectorTests
         director.Reevaluate(telemetry, profile);
         Assert.True(director.RearDefenseActive);
 
+        // Past the minimum-tactic-duration floor (section 9) before the
+        // player's tactic change is allowed to actually flip it back off.
+        director.Tick(30.0);
+
         for (int i = 0; i < 30; i++)
         {
             telemetry.RecordAttack(hit: true, AttackDirection.Front);
@@ -101,5 +104,31 @@ public class AdaptationDirectorTests
         }
 
         Assert.False(director.RearDefenseActive);
+    }
+
+    [Fact]
+    public void Reevaluate_DoesNotDeactivateRearDefense_BeforeMinimumTacticDurationHasPassed()
+    {
+        // Section 9's "minimum tactic duration" safeguard: a countermeasure
+        // that just turned on shouldn't be able to flip back off from a
+        // single contradicting observation moments later.
+        var telemetry = new PlayerBehaviorTelemetry();
+        var profile = new PlayerPlaystyleProfile();
+        var director = new AdaptationDirector();
+
+        for (int i = 0; i < 3; i++)
+        {
+            telemetry.RecordAttack(hit: true, AttackDirection.Rear);
+            profile.Update(telemetry);
+        }
+        director.Reevaluate(telemetry, profile);
+        Assert.True(director.RearDefenseActive);
+
+        // No time advanced — well within the minimum-duration floor.
+        telemetry.RecordAttack(hit: true, AttackDirection.Front);
+        profile.Update(telemetry);
+        director.Reevaluate(telemetry, profile);
+
+        Assert.True(director.RearDefenseActive);
     }
 }

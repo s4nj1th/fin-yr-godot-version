@@ -185,6 +185,7 @@ public partial class GameManager : Node3D
 
 		bool anyEnemyTrackingNow = false;
 		bool anyEnemyHiddenFromAware = false;
+		bool anyLineOfSightJustLost = false;
 
 		for (int i = _enemies.Count - 1; i >= 0; i--)
 		{
@@ -199,11 +200,14 @@ public partial class GameManager : Node3D
 
 			enemy.Tick(delta, _playerPos, _tiles);
 
+			// Consumed per-enemy regardless (each enemy's own flag must be
+			// cleared), but only counted once per frame below — one player
+			// action (e.g. ducking around a corner) can make several
+			// enemies lose sight simultaneously, and that's still one
+			// demonstrated stealth action, not several.
 			if (enemy.ConsumeLineOfSightLostFlag())
 			{
-				_playerTelemetry.RecordLineOfSightBreak();
-				_playerProfile.Update(_playerTelemetry);
-				_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+				anyLineOfSightJustLost = true;
 			}
 
 			switch (enemy.Perception.State)
@@ -215,6 +219,13 @@ public partial class GameManager : Node3D
 					anyEnemyHiddenFromAware = true;
 					break;
 			}
+		}
+
+		if (anyLineOfSightJustLost)
+		{
+			_playerTelemetry.RecordLineOfSightBreak();
+			_playerProfile.Update(_playerTelemetry);
+			_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
 		}
 
 		_playerTelemetry.RecordProximityTick(delta, hiddenFromAwareEnemy: anyEnemyHiddenFromAware, observedByAnyEnemy: anyEnemyTrackingNow);

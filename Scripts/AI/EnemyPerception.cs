@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace DungeonCrawler.AI;
 
 /// <summary>
@@ -35,7 +37,7 @@ public sealed class EnemyPerception
     public PerceptionState State { get; private set; } = PerceptionState.Unaware;
 
     /// <summary>Cells visited by an active search, so it doesn't loop over the same ground.</summary>
-    public System.Collections.Generic.HashSet<GridPoint> SearchedCells { get; } = new();
+    public HashSet<GridPoint> SearchedCells { get; } = new();
 
     private double _timeSinceLastSeen = double.MaxValue;
     private double _stateTimer;

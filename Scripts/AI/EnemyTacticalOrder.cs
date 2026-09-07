@@ -15,6 +15,16 @@ public sealed class EnemyTacticalOrder
     public bool PreferAlternateRoute;
     public float TurnSpeedMultiplier = 1f;
     public float SearchRadius = 4f;
+
+    // Present for shape-fidelity with the plan's own EnemyTacticalOrder
+    // snippet (section 9) but not currently read anywhere: per-enemy order
+    // expiry isn't part of the first milestone (section 15), where an
+    // order is simply whatever the enemy was spawned with, for its whole
+    // lifetime. What DOES expire, at the population level, is which orders
+    // AdaptationDirector hands out to newly-spawned enemies going forward
+    // — see its RearDefenseActive/StealthCountermeasureActive plus the
+    // minimum-tactic-duration safeguard. Wiring per-enemy expiry (e.g. an
+    // order reverting mid-lifetime) is Phase 6 territory.
     public double Duration;
 
     public static EnemyTacticalOrder None() => new();
