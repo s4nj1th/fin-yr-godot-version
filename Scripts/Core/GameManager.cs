@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Godot;
 using DungeonCrawler.AI;
+using DungeonCrawler.Audio;
 using DungeonCrawler.Data;
 using DungeonCrawler.Entities;
 using DungeonCrawler.Network;
@@ -32,7 +33,15 @@ public partial class GameManager : Node3D
 	private readonly DungeonGenerationSettings _generationSettings = new();
 	private readonly List<EnemyController> _enemies = new();
 	private readonly List<(int X, int Y, int W, int H)> _rooms = new();
-	private readonly List<MeshInstance3D> _tileMeshes = new();
+	// Tiles are GPU-instanced via MultiMesh, not one MeshInstance3D per tile —
+	// a 160x160 map is 25,600 cells; that many individual nodes/meshes/
+	// materials was the single biggest frame-rate cost in the game (worse
+	// than the 120-enemy spawn). Grouped into three MultiMeshInstance3D
+	// buckets by geometry (wall / floor+corridor / taller special tiles);
+	// per-tile color still varies via MultiMesh instance color, so this
+	// keeps the existing tile palette and LightenTile's single-tile
+	// recolor-on-chest-open exactly as before, just GPU-instanced.
+	private readonly Dictionary<Vector2I, (MultiMesh Mesh, int Index, Color BaseColor)> _tileInstanceByPos = new();
 	// Tile IDs: 0 wall, 1 floor, 2 corridor, 3 door (unused by generation yet),
 	// 4 trap (drains HP), 5 enemy spawn marker (no effect), 6 chest (one-time score),
 	// 7 start, 8 exit, 9 heal (restores HP). Colors are deliberately spread across
@@ -72,6 +81,7 @@ public partial class GameManager : Node3D
 	private MeshInstance3D _fogOverlay = null!;
 	private ShaderMaterial _fogMaterial = null!;
 	private Camera3D _camera = null!;
+	private DirectionalLight3D? _sunLight;
 	private WorldEnvironment? _worldEnvironment;
 	private Vector2I _playerPos;
 	private Vector2I _startPos;
@@ -92,8 +102,22 @@ public partial class GameManager : Node3D
 	};
 	private int _playerCurrentHp;
 	private double _attackCooldownTimer;
-	private bool _attackKeyWasDown;
+	// Set from the actual key-down InputEvent in _Input, not polled from
+	// Input.IsKeyPressed in _Process — a poll only sees the key's state at
+	// the instant _Process runs, so a quick tap that starts and ends between
+	// two frames is invisible to it (worse the lower the frame rate, which
+	// is exactly when "attack didn't register" complaints showed up). Godot
+	// queues the actual press event regardless of frame rate, so this can't
+	// miss a tap the way the poll could.
+	private bool _attackRequested;
 	private const double AttackCooldown = 0.35;
+	// This is a 4-directional grid (matches enemy movement, pathfinding, and
+	// attack-range logic throughout) — there's no diagonal step. Tracks which
+	// axis's key was pressed most recently, so holding two keys from
+	// different axes at once (e.g. W+A) resolves to the direction the player
+	// most recently reached for, instead of both axes' "only this key"
+	// guards individually failing and producing no movement at all.
+	private bool _lastMovementAxisWasHorizontal;
 
 	// --- Evolutionary loop integration (docs/EVOLUTIONARY_DESIGN.md) ---
 	// Each "trial" is one dungeon generated from a genome; when it ends
@@ -149,6 +173,32 @@ public partial class GameManager : Node3D
 		_apiClient = new ApiClient();
 		AddChild(_apiClient);
 		RequestNextGenomeAndRegenerateAsync();
+	}
+
+	// Event-driven, not polled: guarantees a tap of Space is seen even if it
+	// starts and ends within a single (possibly slow) _Process frame. Echo
+	// is excluded so holding the key down doesn't spam requests — the actual
+	// attack rate is still governed by _attackCooldownTimer in
+	// HandlePlayerAttack, this only records that a press happened at all.
+	public override void _Input(InputEvent @event)
+	{
+		if (@event is not InputEventKey { Pressed: true, Echo: false } keyEvent)
+		{
+			return;
+		}
+
+		switch (keyEvent.Keycode)
+		{
+			case Key.Space:
+				_attackRequested = true;
+				break;
+			case Key.A or Key.D or Key.Left or Key.Right:
+				_lastMovementAxisWasHorizontal = true;
+				break;
+			case Key.W or Key.S or Key.Up or Key.Down:
+				_lastMovementAxisWasHorizontal = false;
+				break;
+		}
 	}
 
 	public override void _Process(double delta)
@@ -461,12 +511,23 @@ public partial class GameManager : Node3D
 			_camera.QueueFree();
 		}
 
+		// SetupCamera() below (re-)creates the sun light every regenerate;
+		// without freeing the previous one first, each regenerate added a
+		// brand new DirectionalLight3D on top of every prior one (nothing
+		// ever referenced or freed the old ones), and total scene light
+		// energy compounded — the game visibly got brighter every time a
+		// level was regenerated or completed.
+		if (_sunLight != null)
+		{
+			_sunLight.QueueFree();
+		}
+
 		if (_playerMesh != null)
 		{
 			_playerMesh.QueueFree();
 		}
 
-		_tileMeshes.Clear();
+		_tileInstanceByPos.Clear();
 		_enemies.Clear();
 		_rooms.Clear();
 
@@ -666,40 +727,96 @@ public partial class GameManager : Node3D
 		}
 	}
 
+	// Wall tiles stand taller than floor/corridor tiles; the remaining
+	// special markers (door/trap/spawn/chest/start/exit/heal) sit at floor
+	// height but slightly taller than plain floor to read as distinct —
+	// same three heights BuildLevel used before, now the three buckets that
+	// share a MultiMesh geometry.
+	private enum TileGeometryBucket { Wall, Floor, Special }
+
+	private static TileGeometryBucket GetTileBucket(int tileType) => tileType switch
+	{
+		0 => TileGeometryBucket.Wall,
+		1 or 2 => TileGeometryBucket.Floor,
+		_ => TileGeometryBucket.Special
+	};
+
+	private static MultiMesh CreateTileMultiMesh(int instanceCount, Vector3 boxSize)
+	{
+		return new MultiMesh
+		{
+			TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
+			UseColors = true,
+			Mesh = new BoxMesh { Size = boxSize },
+			InstanceCount = Math.Max(instanceCount, 0)
+		};
+	}
+
+	private static MultiMeshInstance3D CreateTileMultiMeshInstance(MultiMesh multiMesh)
+	{
+		return new MultiMeshInstance3D
+		{
+			Multimesh = multiMesh,
+			MaterialOverride = new StandardMaterial3D
+			{
+				VertexColorUseAsAlbedo = true,
+				Metallic = 0.08f,
+				Roughness = 0.75f
+			}
+		};
+	}
+
 	private void BuildLevel()
 	{
 		_levelRoot = new Node3D();
 		_markerRoot = new Node3D();
 		AddChild(_levelRoot);
 		AddChild(_markerRoot);
-		_tileMeshes.Clear();
+		_tileInstanceByPos.Clear();
 
+		int wallCount = 0, floorCount = 0, specialCount = 0;
+		for (int y = 0; y < _mapHeight; y++)
+		{
+			for (int x = 0; x < _mapWidth; x++)
+			{
+				_discoveredTiles[y, x] = false;
+				switch (GetTileBucket(_tiles[y, x]))
+				{
+					case TileGeometryBucket.Wall: wallCount++; break;
+					case TileGeometryBucket.Floor: floorCount++; break;
+					default: specialCount++; break;
+				}
+			}
+		}
+
+		MultiMesh wallMultiMesh = CreateTileMultiMesh(wallCount, new Vector3(1.0f, 1.1f, 1.0f));
+		MultiMesh floorMultiMesh = CreateTileMultiMesh(floorCount, new Vector3(1.0f, TileHeight, 1.0f));
+		MultiMesh specialMultiMesh = CreateTileMultiMesh(specialCount, new Vector3(1.0f, TileHeight + 0.15f, 1.0f));
+
+		_levelRoot.AddChild(CreateTileMultiMeshInstance(wallMultiMesh));
+		_levelRoot.AddChild(CreateTileMultiMeshInstance(floorMultiMesh));
+		_levelRoot.AddChild(CreateTileMultiMeshInstance(specialMultiMesh));
+
+		int wallIndex = 0, floorIndex = 0, specialIndex = 0;
 		for (int y = 0; y < _mapHeight; y++)
 		{
 			for (int x = 0; x < _mapWidth; x++)
 			{
 				int tileType = _tiles[y, x];
-				_discoveredTiles[y, x] = false;
-				float verticalScale = tileType == 0 ? 1.1f : (tileType == 1 || tileType == 2 ? TileHeight : TileHeight + 0.15f);
 				float baseY = tileType == 0 ? 0.55f : 0.18f;
+				Vector3 position = GridToWorld(new Vector2I(x, y)) + new Vector3(0, baseY, 0);
+				Color color = _tileColors.GetValueOrDefault(tileType, Color.FromHtml("#1e2436"));
 
-				var tile = new MeshInstance3D
+				(MultiMesh mesh, int index) = GetTileBucket(tileType) switch
 				{
-					Mesh = new BoxMesh
-					{
-						Size = new Vector3(1.0f, verticalScale, 1.0f)
-					},
-					Position = GridToWorld(new Vector2I(x, y)) + new Vector3(0, baseY, 0),
-					MaterialOverride = new StandardMaterial3D
-					{
-						AlbedoColor = _tileColors.GetValueOrDefault(tileType, Color.FromHtml("#1e2436")),
-						Metallic = 0.08f,
-						Roughness = 0.75f
-					}
+					TileGeometryBucket.Wall => (wallMultiMesh, wallIndex++),
+					TileGeometryBucket.Floor => (floorMultiMesh, floorIndex++),
+					_ => (specialMultiMesh, specialIndex++)
 				};
 
-				_levelRoot.AddChild(tile);
-				_tileMeshes.Add(tile);
+				mesh.SetInstanceTransform(index, new Transform3D(Basis.Identity, position));
+				mesh.SetInstanceColor(index, color);
+				_tileInstanceByPos[new Vector2I(x, y)] = (mesh, index, color);
 			}
 		}
 
@@ -926,15 +1043,21 @@ void fragment() {
 
 		AddChild(_camera);
 
-		var light = new DirectionalLight3D
+		_sunLight = new DirectionalLight3D
 		{
 			RotationDegrees = new Vector3(-50, 35, 0),
 			LightColor = Color.FromHtml("#fff3e0"),
-			LightEnergy = 1.6f,
-			ShadowEnabled = true
+			LightEnergy = 1.1f,
+			ShadowEnabled = true,
+			// Tall wall tiles at this light angle were casting long, hard-
+			// edged shadows across the floor — ShadowOpacity lightens them
+			// instead of full black, ShadowBlur softens the edges so they
+			// read as ambient occlusion rather than sharp shapes.
+			ShadowOpacity = 0.45f,
+			ShadowBlur = 3.0f
 		};
 
-		AddChild(light);
+		AddChild(_sunLight);
 	}
 
 	private void SetupEnvironment()
@@ -955,8 +1078,15 @@ void fragment() {
 			BackgroundMode = Godot.Environment.BGMode.Sky,
 			Sky = sky,
 			AmbientLightSource = Godot.Environment.AmbientSource.Sky,
-			AmbientLightEnergy = 0.7f,
-			TonemapMode = Godot.Environment.ToneMapper.Aces
+			AmbientLightEnergy = 0.6f,
+			// Aces' filmic highlight roll-off was blowing out bright, saturated
+			// tile/marker colors into a soft glow-like halo (visible on plain,
+			// non-emissive assets like the chest cube) — Linear tonemapping
+			// removes that without needing per-material changes.
+			TonemapMode = Godot.Environment.ToneMapper.Linear,
+			// Explicit, not just relying on the default, so a soft bloom pass
+			// can never sneak back in from an Environment default change.
+			GlowEnabled = false
 		};
 
 		_worldEnvironment = new WorldEnvironment { Environment = environment };
@@ -1040,6 +1170,12 @@ void fragment() {
 
 			var enemy = new EnemyController();
 			enemy.WorldOffset = worldOffset;
+			// Main dungeon spawns up to 120 enemies; the 8x8 debug board is a
+			// per-enemy AI-inspection aid meant for the 2-enemy test scenes
+			// (ShowDebugBoard stays on there) and costs ~66 mesh instances
+			// each — disabled here so frame rate doesn't collapse with a
+			// full spawn.
+			enemy.ShowDebugBoard = false;
 			enemy.Initialize(spawnPoints[i], definition.Behavior, definition);
 			enemy.Position = GridToWorld(spawnPoints[i]) + new Vector3(0, 0.4f, 0);
 			enemy.TacticalOrder = _adaptationDirector.CreateOrderForNewEnemy(_playerProfile);
@@ -1176,14 +1312,18 @@ void fragment() {
 	{
 		_attackCooldownTimer = Math.Max(0.0, _attackCooldownTimer - delta);
 
-		bool attackKeyDown = Input.IsKeyPressed(Key.Space);
-		if (attackKeyDown && !_attackKeyWasDown && _attackCooldownTimer <= 0.0)
+		if (_attackRequested && _attackCooldownTimer <= 0.0)
 		{
 			TryAttackNearestEnemy();
 			_attackCooldownTimer = AttackCooldown;
 		}
 
-		_attackKeyWasDown = attackKeyDown;
+		// Consumed every HandlePlayerAttack call regardless of whether an
+		// attack actually fired, so a press that arrives while still on
+		// cooldown doesn't queue up and fire late once the cooldown clears —
+		// matches the original poll-based behavior's timing, just without
+		// the poll's dropped-tap failure mode.
+		_attackRequested = false;
 	}
 
 	private void TryAttackNearestEnemy()
@@ -1198,7 +1338,13 @@ void fragment() {
 				continue;
 			}
 
-			int distance = Math.Abs(enemy.GridPos.X - _playerPos.X) + Math.Abs(enemy.GridPos.Y - _playerPos.Y);
+			// Chebyshev distance (max of the two axis deltas), not Manhattan:
+			// an enemy diagonally adjacent to the player is one step away in
+			// any 4-directional grid sense a player actually perceives, but
+			// Manhattan distance counts it as 2 and put it out of reach of
+			// AttackRange = 1 — the original source of "can't attack an
+			// enemy standing right next to me."
+			int distance = Math.Max(Math.Abs(enemy.GridPos.X - _playerPos.X), Math.Abs(enemy.GridPos.Y - _playerPos.Y));
 			if (distance <= _playerStats.AttackRange && distance < bestDistance)
 			{
 				bestDistance = distance;
@@ -1212,6 +1358,7 @@ void fragment() {
 		}
 
 		PlayPlayerAttackFx(target.Position);
+		PlaySfx(Sfx.Attack);
 
 		Vector2I toTarget = target.GridPos - _playerPos;
 		bool targetWasAware = target.Perception.State != PerceptionState.Unaware;
@@ -1235,10 +1382,31 @@ void fragment() {
 			_score += target.Stats.Reward;
 			_trialEnemiesKilled++;
 			_playerTelemetry.RecordEnemyKilled();
+			PlaySfx(Sfx.EnemyDied);
+		}
+		else
+		{
+			PlaySfx(Sfx.Hit);
 		}
 	}
 
 	private static GridPoint ToGridPoint(Vector2I v) => new(v.X, v.Y);
+
+	// Parented directly under GameManager (this), not _levelRoot/_enemyRoot —
+	// those get QueueFree'd on every RegenerateDungeon (exit reached, R
+	// pressed, timeout), which would cut off a cue like Sfx.Exit mid-playback
+	// since regeneration happens the same frame the exit is reached.
+	private void PlaySfx(AudioStreamWav stream)
+	{
+		var player = new AudioStreamPlayer
+		{
+			Stream = stream,
+			VolumeDb = -6f
+		};
+		AddChild(player);
+		player.Finished += player.QueueFree;
+		player.Play();
+	}
 
 	private void PlayPlayerAttackFx(Vector3 targetWorldPos)
 	{
@@ -1280,6 +1448,7 @@ void fragment() {
 		_playerCurrentHp = Math.Max(0, _playerCurrentHp - mitigated);
 		_trialDamageTaken += mitigated;
 		_playerTelemetry.RecordPlayerDamaged();
+		PlaySfx(Sfx.PlayerHurt);
 
 		if (_playerCurrentHp <= 0)
 		{
@@ -1294,6 +1463,7 @@ void fragment() {
 		_playerPos = _startPos;
 		SetPlayerWorldPosition();
 		_playerCurrentHp = _playerStats.MaxHp;
+		PlaySfx(Sfx.PlayerDeath);
 	}
 
 	private Vector2I GetMovementDirection()
@@ -1303,12 +1473,21 @@ void fragment() {
 		bool down = Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S);
 		bool up = Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W);
 
-		if (right && !left && !up && !down) return Vector2I.Right;
-		if (left && !right && !up && !down) return Vector2I.Left;
-		if (up && !down && !left && !right) return Vector2I.Up;
-		if (down && !up && !left && !right) return Vector2I.Down;
+		// Opposite keys on the same axis (A+D, W+S) genuinely cancel out —
+		// that's correct. Two keys from *different* axes (e.g. W+A) used to
+		// also cancel out to no movement at all, since each branch below
+		// required every other key to be released; now one resolved
+		// direction per axis, and if both axes have one, the more recently
+		// pressed axis (tracked in _Input) wins instead of neither moving.
+		Vector2I horizontal = right == left ? Vector2I.Zero : (right ? Vector2I.Right : Vector2I.Left);
+		Vector2I vertical = up == down ? Vector2I.Zero : (up ? Vector2I.Up : Vector2I.Down);
 
-		return Vector2I.Zero;
+		if (horizontal != Vector2I.Zero && vertical != Vector2I.Zero)
+		{
+			return _lastMovementAxisWasHorizontal ? horizontal : vertical;
+		}
+
+		return horizontal != Vector2I.Zero ? horizontal : vertical;
 	}
 
 	private void HandleTileEffect()
@@ -1324,10 +1503,12 @@ void fragment() {
 					_rewardCollected = true;
 					_trialChestsOpened++;
 					LightenTile(_playerPos, 0.55f);
+					PlaySfx(Sfx.Chest);
 				}
 				break;
 			case 8:
 				_score += 50;
+				PlaySfx(Sfx.Exit);
 				EndTrialAndAdvanceAsync(exitReached: true, quitEarly: false);
 				break;
 		}
@@ -1341,9 +1522,17 @@ void fragment() {
 			_tileEffectAccumulator = 0.0;
 			_lastStandingTileType = tileType;
 
+			// Signaled once on stepping onto the tile, not once per accumulator
+			// tick below — that fires up to TrapDamagePerSecond/HealPerSecond
+			// times a second, which would sound like a siren instead of a cue.
 			if (tileType == 4)
 			{
 				_trialTrapsTriggered++;
+				PlaySfx(Sfx.Trap);
+			}
+			else if (tileType == 9)
+			{
+				PlaySfx(Sfx.Heal);
 			}
 		}
 
@@ -1376,10 +1565,11 @@ void fragment() {
 
 	private void LightenTile(Vector2I pos, float amount)
 	{
-		int index = (pos.Y * _mapWidth) + pos.X;
-		if (index >= 0 && index < _tileMeshes.Count && _tileMeshes[index].MaterialOverride is StandardMaterial3D tileMaterial)
+		if (_tileInstanceByPos.TryGetValue(pos, out var tile))
 		{
-			tileMaterial.AlbedoColor = tileMaterial.AlbedoColor.Lerp(Colors.White, amount);
+			Color lightened = tile.BaseColor.Lerp(Colors.White, amount);
+			tile.Mesh.SetInstanceColor(tile.Index, lightened);
+			_tileInstanceByPos[pos] = (tile.Mesh, tile.Index, lightened);
 		}
 
 		if (_markersByPos.TryGetValue(pos, out MeshInstance3D? marker) && marker.MaterialOverride is StandardMaterial3D markerMaterial)

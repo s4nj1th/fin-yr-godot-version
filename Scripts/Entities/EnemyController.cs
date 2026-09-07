@@ -20,6 +20,13 @@ public partial class EnemyController : Node3D
 	public int MaxHp => Stats.MaxHp;
 	public Vector2 WorldOffset { get; set; } = Vector2.Zero;
 
+	// The 8x8 debug board (ENEMY_AI.md section 5) is 66 extra MeshInstance3D
+	// nodes and materials per enemy — fine for the 2-enemy AI test scenes it
+	// was built for, ruinous for the main dungeon's up-to-120-enemy spawns
+	// (120 x 66 ~= 7,900 nodes rebuilt/recolored on every AI step). Must be
+	// set before Initialize() — BuildVisuals reads it once, at construction.
+	public bool ShowDebugBoard { get; set; } = true;
+
 	// --- Adaptive AI (docs/ENEMY_AI_ADAPTATION_PLAN.md) ---
 	// Perception is tracked for every enemy regardless of whether it has an
 	// active tactical order — it's cheap and keeps the belief state ready
@@ -68,7 +75,10 @@ public partial class EnemyController : Node3D
 
 		BuildVisuals();
 		UpdatePosition();
-		RefreshAiGridVisualization();
+		if (ShowDebugBoard)
+		{
+			RefreshAiGridVisualization();
+		}
 	}
 
 	public void TakeDamage(int rawDamage, AttackDirection direction = AttackDirection.Front)
@@ -145,8 +155,11 @@ public partial class EnemyController : Node3D
 			UpdatePosition();
 		}
 
-		BuildAiPixelGrid(playerPos, walkableGrid);
-		RefreshAiGridVisualization();
+		if (ShowDebugBoard)
+		{
+			BuildAiPixelGrid(playerPos, walkableGrid);
+			RefreshAiGridVisualization();
+		}
 	}
 
 	public int[,] BuildAiPixelGrid(Vector2I playerPos, int[,] walkableGrid)
@@ -553,6 +566,11 @@ public partial class EnemyController : Node3D
 		};
 
 		AddChild(_body);
+
+		if (!ShowDebugBoard)
+		{
+			return;
+		}
 
 		_nnWallRoot = new Node3D
 		{
