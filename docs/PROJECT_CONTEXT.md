@@ -68,11 +68,24 @@ Primary enemy script:
 
 1. [Scripts/Entities/EnemyController.cs](../Scripts/Entities/EnemyController.cs)
 
+Detailed enemy documentation:
+
+1. [docs/ENEMY_AI.md](ENEMY_AI.md)
+
 Current visual and debug model:
 
 1. Enemy body is a capsule mesh.
-2. Enemy carries an 8x8 NN-style grid board behind it.
-3. Grid cells visualize local tile and target information.
+2. Enemy carries an 8x8 NN-style debug grid board behind it.
+3. Grid cells visualize a local map window, the player cell, and cells adjacent to the player.
+4. The board is a visualization of local state; it is not a neural-network inference layer and does not choose actions.
+
+Grid and movement summary:
+
+1. `GridPos` is the authoritative enemy location as integer `(x, y)` coordinates.
+2. The map array is indexed as `grid[y, x]`, while `Vector2I` stores `X` and `Y`.
+3. An enemy evaluates only the four cardinal neighboring cells and rejects coordinates outside the map or with tile value `0`.
+4. Normal movement uses Manhattan distance to the player and greedily selects the best legal neighbor. It does not currently use A\*, BFS, line-of-sight checks, or a reservation system for other enemies.
+5. The 8x8 board covers a local window around the enemy and encodes wall/out-of-bounds, player, adjacent-to-player, and ordinary walkable cells. See [ENEMY_AI.md](ENEMY_AI.md) for the exact coordinate and color mapping.
 
 Current behavior types (AI differs, stats can remain identical in test scenes):
 
@@ -144,6 +157,10 @@ For AI behavior iteration:
 For main large-map dungeon loop:
 
 1. Run [Main.tscn](../Main.tscn)
+
+For the full explanation of enemy state, movement heuristics, attack timing, and grid encoding:
+
+1. Read [ENEMY_AI.md](ENEMY_AI.md)
 
 ## 9. Next Recommended Extensions
 
