@@ -12,16 +12,16 @@ config_version=5
 
 compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
-[autoload]
-
-GameHud="*res://Scripts/UI/GameHud.cs"
-
 [application]
 
 config/name="Evolutionary Dungeon Crawler"
 config/description="A Godot 4 C# dungeon crawler driven by a human-coupled evolutionary loop (Minimal Criterion Coevolution) — see docs/EVOLUTIONARY_DESIGN.md."
 run/main_scene="res://Scenes/MeleeAiTest.tscn"
 config/features=PackedStringArray("4.7", "C#")
+
+[autoload]
+
+GameHud="*res://Scripts/UI/GameHud.cs"
 
 [display]
 
