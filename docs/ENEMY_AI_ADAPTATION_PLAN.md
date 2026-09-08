@@ -462,6 +462,12 @@ Create repeatable scenarios:
 
 Measure both whether the enemy adapts and whether the response remains fair and understandable.
 
+Related, already built: [BEHAVIOR_ANALYTICS.md](BEHAVIOR_ANALYTICS.md)
+instruments and visualizes per-archetype combat outcomes split by
+baseline vs. adapted, from real trials — a step toward this phase's
+"measure whether the enemy adapts," though not yet the repeatable
+scripted scenarios this phase calls for.
+
 ## 15. First Milestone
 
 The first complete milestone should be:

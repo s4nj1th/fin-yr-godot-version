@@ -181,6 +181,15 @@ public class TelemetryMetrics
 	[JsonPropertyName("exploration_percent")] public float ExplorationPercent { get; set; }
 	[JsonPropertyName("exit_reached")] public bool ExitReached { get; set; }
 	[JsonPropertyName("quit_early")] public bool QuitEarly { get; set; }
+
+	// Per-archetype, per-situation combat counters for this trial (see
+	// DungeonCrawler.AI.EnemyBehaviorTelemetry.Snapshot and
+	// docs/BEHAVIOR_ANALYTICS.md). Shape: {behaviorType: {"baseline": {...},
+	// "adapted": {...}}}, each innermost dict a flat set of int counters.
+	// Optional/additive: an older backend that doesn't know this field just
+	// ignores it (Backend/models.py defaults it to {}), so this never
+	// breaks the core report_outcome contract.
+	[JsonPropertyName("enemy_behavior_breakdown")] public Dictionary<string, Dictionary<string, Dictionary<string, int>>> EnemyBehaviorBreakdown { get; set; } = new();
 }
 
 // --- Evolutionary-algorithm genome contract (Backend/models.py mirrors this) ---
@@ -237,6 +246,11 @@ public class ReportOutcomeRequest
 {
 	[JsonPropertyName("genome_id")] public string GenomeId { get; set; } = "";
 	[JsonPropertyName("telemetry")] public TelemetryMetrics Telemetry { get; set; } = new();
+	// "human" (default) or "bot" — which evaluator generated this trial. Set
+	// by GameManager.EndTrialAndAdvanceAsync from AutoplayEnabled. See
+	// docs/EVOLUTIONARY_DESIGN.md "Scripted bot evaluator" and
+	// Backend/models.py's ReportOutcomeRequest.evaluator_type.
+	[JsonPropertyName("evaluator_type")] public string EvaluatorType { get; set; } = "human";
 }
 
 public class ReportOutcomeResponse

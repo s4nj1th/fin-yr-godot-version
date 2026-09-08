@@ -40,7 +40,9 @@ def next_candidate() -> NextCandidateResponse:
 
 @app.post("/api/report_outcome", response_model=ReportOutcomeResponse)
 def report_outcome(request: ReportOutcomeRequest) -> ReportOutcomeResponse:
-    passed, fail_reason = manager.report_outcome(request.genome_id, request.telemetry.model_dump())
+    passed, fail_reason = manager.report_outcome(
+        request.genome_id, request.telemetry.model_dump(), evaluator_type=request.evaluator_type
+    )
     if fail_reason == "unknown_genome_id":
         raise HTTPException(status_code=404, detail="Unknown or already-reported genome_id")
 

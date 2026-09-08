@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,11 +16,32 @@ class TelemetryMetrics(BaseModel):
     exploration_percent: float = 0.0
     exit_reached: bool = False
     quit_early: bool = False
+    # Per-archetype, per-situation combat counters for this trial. Shape:
+    # {behavior_type: {"baseline": {counters}, "adapted": {counters}}},
+    # where behavior_type is melee_chaser/melee_hit_run/ranged_kite/
+    # ranged_strafe, "adapted" means the specific enemy involved carried an
+    # active AdaptationDirector tactical order, and counters is a flat dict
+    # (spawned, attacks_on_player, damage_dealt_to_player,
+    # hits_taken_from_player, damage_taken_from_player, rear_hits_taken,
+    # killed_by_player). Populated by Scripts/AI/EnemyBehaviorTelemetry.cs,
+    # attributed per-enemy at the moment of each combat event — not
+    # approximated after the fact. Defaults to {} so older clients (and
+    # every pre-existing session_log.jsonl entry) stay valid — this is
+    # additive, not a breaking schema change. See docs/BEHAVIOR_ANALYTICS.md.
+    enemy_behavior_breakdown: dict[str, dict[str, dict[str, int]]] = Field(default_factory=dict)
 
 
 class ReportOutcomeRequest(BaseModel):
     genome_id: str
     telemetry: TelemetryMetrics
+    # "human" (default, and every trial ever reported before this field
+    # existed) or "bot" — the optional scripted evaluator described in
+    # docs/EVOLUTIONARY_DESIGN.md "Scripted bot evaluator". Bot trials go
+    # through the exact same minimal-criterion/Hall-of-Fame/surrogate path
+    # as human ones; this is purely a label so they stay filterable
+    # (MCCManager.stats, behavior_analytics.py) rather than silently
+    # blending into "human" counts.
+    evaluator_type: Literal["human", "bot"] = "human"
 
 
 class GenomeParams(BaseModel):

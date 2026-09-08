@@ -10,8 +10,11 @@ namespace DungeonCrawler.Network;
 public partial class ApiClient : Node
 {
 	// Matches the evolutionary-loop backend under Backend/ (run with
-	// `uvicorn main:app --port 8000`, see Backend/README.md).
-	[Export] public string BaseUrl { get; set; } = "http://localhost:8000";
+	// `uvicorn main:app --port 8001`, see Backend/README.md).
+	// NOTE: Port 8001 is used instead of 8000 because port 8000 was already
+	// occupied by an unrelated pre-existing process on the development machine.
+	// Run the backend with: cd Backend && uvicorn main:app --port 8001
+	[Export] public string BaseUrl { get; set; } = "http://localhost:8001";
 
 	private readonly System.Net.Http.HttpClient _client = new()
 	{

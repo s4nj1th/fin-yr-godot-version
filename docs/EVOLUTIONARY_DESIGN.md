@@ -100,6 +100,49 @@ construction: the archive, the minimal criterion, the surrogate, and the
 default mutation operator are all LLM-free, and the LLM path is a strictly
 optional, independently-toggleable extra that the core loop never depends on.
 
+## Scripted bot evaluator — optional, off by default, feeds the real loop
+
+A real playthrough costs the player several minutes, and archive growth is
+bottlenecked on how much a human can play. `Scripts/AI/BotPlayerPolicy.cs`
+is an optional autoplay input source — set `GameManager.AutoplayEnabled`
+(Inspector export or a `--autoplay` CLI flag on the running build) and the
+bot drives the player instead of the keyboard, through the exact same
+`GameManager`/`EnemyController` code, `/api/next_candidate` →
+`/api/report_outcome` loop, and minimal criterion a human trial goes
+through. Nothing about MCC's accept/reject logic changes for a bot trial —
+it can grow the real Hall of Fame.
+
+What makes it different from a human trial is purely a label. Every
+`ReportOutcomeRequest` carries `evaluator_type` (`"human"`, the default a
+real client always used to send implicitly, or `"bot"`), which
+`MCCManager.report_outcome` stores on the accepted candidate and the
+`session_log.jsonl` record, and counts separately in `/api/stats`
+(`human_evaluations` / `bot_evaluations` / `real_evaluations` = their sum).
+This keeps bot-sourced data a measurable, filterable ablation rather than
+something that silently blends into "human" numbers — the same pattern
+already used for LLM-guided mutation above. `behavior_analytics.py`'s
+`filter_by_evaluator_type` and `analyze_behavior_telemetry.py --evaluator
+{human,bot}` (see [BEHAVIOR_ANALYTICS.md](BEHAVIOR_ANALYTICS.md)) let any
+chart be produced for one evaluator in isolation, so bot-vs-human telemetry
+actually can be compared before trusting the bot's volume as a proxy.
+
+`AutoplayTimeScale` (default `4.0`) scales `Engine.TimeScale`, which speeds
+up every delta-driven system uniformly (movement, cooldowns,
+`MAX_TRIAL_SECONDS`) — a bot doesn't need real-time pacing. `AutoplayMaxTrials`
+(default `0` = unbounded) makes the process self-quit after N reported
+trials, for an unattended batch run.
+
+**Honest limitation, stated plainly**: `BotPlayerPolicy` is deliberately
+simple — BFS straight to the exit (`GridPathfinder`, the same pathfinder
+enemies use), backing away from the nearest threat only once health drops
+below 30%. It does not seek chests, avoid traps, feint, use cover, or
+otherwise resemble skilled or varied human play. It exists to generate
+*volume* of real per-archetype combat telemetry fast, not to be a validated
+stand-in for a human player — that validation (do bot-sourced and
+human-sourced archetype profiles actually agree?) is exactly what the
+human/bot split above makes possible to check, not something claimed here
+by construction.
+
 ## Telemetry → minimal criterion mapping
 
 `Scripts/Core/GameManager.cs` accumulates telemetry for the current trial
@@ -117,8 +160,18 @@ them (`quit_early` vs. `too_slow_abandoned`) accordingly.
 - Flat-parameter genome, not a structural/topological one — see above.
 - No behavioral-descriptor archive (MAP-Elites-style quality-diversity) yet;
   this is a pass/fail archive, not an illuminated grid. A natural extension.
-- Single real evaluator (the live player) — no scripted bot agents yet to
-  scale up archive growth or to validate bot-vs-human telemetry as a proxy.
+- A scripted bot evaluator now exists (see above) to scale up archive
+  growth, but it's a deliberately simple exit-rushing heuristic, not a
+  validated proxy for human play — treat bot-sourced telemetry as its own
+  labeled condition (`evaluator_type=bot`) to compare against human data,
+  not as interchangeable with it, until that comparison has actually been
+  run.
 - No automated C# tests (Godot's Node lifecycle makes `GameManager`/
   `EnemyController` hard to unit-test without a Godot test runner); the
   Python backend has automated tests (`Backend/tests/`), the C# side does not.
+
+See [BEHAVIOR_ANALYTICS.md](BEHAVIOR_ANALYTICS.md) for a related but
+separate piece: per-archetype combat telemetry and charts built on top of
+`session_log.jsonl`. It answers "how does each enemy AI archetype behave
+and how does that change across generations," not "how good is a genome" —
+it doesn't feed back into the MCC loop itself.

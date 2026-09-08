@@ -38,6 +38,13 @@ class MCCManager:
         self.pending: dict[str, dict[str, Any]] = {}
         self.auto_accepted_count = 0
         self.auto_rejected_count = 0
+        # Real (non-surrogate) evaluations, split by who generated the
+        # telemetry — see docs/EVOLUTIONARY_DESIGN.md "Scripted bot
+        # evaluator". human_evaluation_count + bot_evaluation_count ==
+        # len(self.surrogate.y_train), since every real outcome (whichever
+        # evaluator produced it) trains the surrogate the same way.
+        self.human_evaluation_count = 0
+        self.bot_evaluation_count = 0
         self.recent_outcomes: list[dict[str, Any]] = []
         self.llm_mutations_used = 0
         self.random_mutations_used = 0
@@ -76,7 +83,9 @@ class MCCManager:
         self._save_state()
         return candidate, None
 
-    def report_outcome(self, genome_id: str, telemetry: dict[str, Any]) -> tuple[bool, Optional[str]]:
+    def report_outcome(
+        self, genome_id: str, telemetry: dict[str, Any], evaluator_type: str = "human"
+    ) -> tuple[bool, Optional[str]]:
         candidate = self.pending.pop(genome_id, None)
         if candidate is None:
             self._append_log({"event": "unknown_genome_id", "genome_id": genome_id, "telemetry": telemetry})
@@ -85,10 +94,21 @@ class MCCManager:
 
         passed, reason = self._evaluate_minimal_criterion(telemetry)
 
+        if evaluator_type == "bot":
+            self.bot_evaluation_count += 1
+        else:
+            self.human_evaluation_count += 1
+
         if passed:
             candidate["accepted_at"] = time.time()
             candidate["telemetry"] = telemetry
+            # decision_source distinguishes "a real playthrough decided this"
+            # from "the surrogate auto-decided this" (see _auto_decide) — it
+            # stays "human" regardless of evaluator_type, since a bot trial
+            # is still a real evaluation, not a surrogate guess. Which real
+            # evaluator produced it is evaluator_type's job, not this field's.
             candidate["decision_source"] = "human"
+            candidate["evaluator_type"] = evaluator_type
             self.hall_of_fame.append(candidate)
 
         self.surrogate.add_example(candidate["params"], passed)
@@ -107,6 +127,7 @@ class MCCManager:
                 "passed": passed,
                 "fail_reason": reason,
                 "decision_source": "human",
+                "evaluator_type": evaluator_type,
                 "mutation_source": candidate.get("mutation_source", "random"),
                 "hall_of_fame_size": len(self.hall_of_fame),
             }
@@ -122,7 +143,9 @@ class MCCManager:
     def stats(self) -> dict[str, Any]:
         return {
             "hall_of_fame_size": len(self.hall_of_fame),
-            "human_evaluations": len(self.surrogate.y_train),
+            "real_evaluations": len(self.surrogate.y_train),
+            "human_evaluations": self.human_evaluation_count,
+            "bot_evaluations": self.bot_evaluation_count,
             "auto_accepted": self.auto_accepted_count,
             "auto_rejected": self.auto_rejected_count,
             "surrogate_ready": self.surrogate.is_ready(),
@@ -232,6 +255,8 @@ class MCCManager:
             self.pending = state.get("pending", {})
             self.auto_accepted_count = state.get("auto_accepted_count", 0)
             self.auto_rejected_count = state.get("auto_rejected_count", 0)
+            self.human_evaluation_count = state.get("human_evaluation_count", 0)
+            self.bot_evaluation_count = state.get("bot_evaluation_count", 0)
             self.recent_outcomes = state.get("recent_outcomes", [])
             self.llm_mutations_used = state.get("llm_mutations_used", 0)
             self.random_mutations_used = state.get("random_mutations_used", 0)
@@ -250,6 +275,8 @@ class MCCManager:
                     "pending": self.pending,
                     "auto_accepted_count": self.auto_accepted_count,
                     "auto_rejected_count": self.auto_rejected_count,
+                    "human_evaluation_count": self.human_evaluation_count,
+                    "bot_evaluation_count": self.bot_evaluation_count,
                     "recent_outcomes": self.recent_outcomes,
                     "llm_mutations_used": self.llm_mutations_used,
                     "random_mutations_used": self.random_mutations_used,

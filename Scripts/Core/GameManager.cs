@@ -142,6 +142,23 @@ public partial class GameManager : Node3D
 	private int _trialTotalChests;
 	private bool _trialReported;
 
+	// --- Scripted bot evaluator (optional, off by default) ---
+	// See docs/EVOLUTIONARY_DESIGN.md "Scripted bot evaluator" section.
+	// Reuses the exact same trial loop, GameManager/EnemyController combat
+	// code, and /api/report_outcome path a human would — only the input
+	// source changes (BotPlayerPolicy instead of keyboard). Trials it plays
+	// are tagged evaluator_type="bot" so they stay a labeled, filterable
+	// ablation rather than silently blending into human-sourced data.
+	[Export] public bool AutoplayEnabled { get; set; }
+	// Godot's Engine.TimeScale speeds up every delta-driven system uniformly
+	// (movement step timers, attack cooldowns, MAX_TRIAL_SECONDS) — a bot
+	// doesn't need real-time pacing the way a human reading the screen does.
+	[Export] public float AutoplayTimeScale { get; set; } = 4.0f;
+	// 0 = run until the process is stopped externally; >0 = self-quit after
+	// that many reported trials, for an unattended overnight batch run.
+	[Export] public int AutoplayMaxTrials { get; set; }
+	private int _autoplayTrialsCompleted;
+
 	// --- Adaptive enemy AI (docs/ENEMY_AI_ADAPTATION_PLAN.md) ---
 	// Unlike the _trial* counters above (which reset every regeneration and
 	// feed the evolutionary-loop backend), these persist for the whole play
@@ -151,6 +168,9 @@ public partial class GameManager : Node3D
 	private readonly PlayerBehaviorTelemetry _playerTelemetry = new();
 	private readonly PlayerPlaystyleProfile _playerProfile = new();
 	private readonly AdaptationDirector _adaptationDirector = new();
+	// Per-archetype combat counters, reset every trial (unlike the
+	// lifetime-accumulating fields above) — see docs/BEHAVIOR_ANALYTICS.md.
+	private readonly EnemyBehaviorTelemetry _behaviorTelemetry = new();
 	private Vector2I _playerFacing = Vector2I.Down;
 	private bool _anyEnemyTrackingLastFrame;
 	private bool _debugRearDefenseWasActive;
@@ -172,6 +192,43 @@ public partial class GameManager : Node3D
 	{
 		_apiClient = new ApiClient();
 		AddChild(_apiClient);
+
+		// CLI flags let a headless/exported build be launched unattended
+		// (e.g. `godot --headless -- --autoplay --autoplay-max-trials=20`)
+		// without needing the editor GUI to set the scene's Inspector
+		// exports each time — either source (Inspector or CLI) turns it on.
+		// GetCmdlineUserArgs(), not GetCmdlineArgs() — the latter returns the
+		// engine's own parsed args (--headless, the scene path, etc.), not
+		// what follows `--` on the command line. Confirmed the hard way: an
+		// earlier version of this used GetCmdlineArgs() and --autoplay was
+		// silently never seen, so the "bot" run just sat idle and timed out.
+		string[] cmdlineArgs = OS.GetCmdlineUserArgs();
+		if (!AutoplayEnabled && Array.Exists(cmdlineArgs, arg => arg == "--autoplay"))
+		{
+			AutoplayEnabled = true;
+		}
+
+		foreach (string arg in cmdlineArgs)
+		{
+			if (arg.StartsWith("--autoplay-max-trials=", StringComparison.Ordinal)
+				&& int.TryParse(arg.AsSpan("--autoplay-max-trials=".Length), out int maxTrials))
+			{
+				AutoplayMaxTrials = maxTrials;
+			}
+			else if (arg.StartsWith("--autoplay-timescale=", StringComparison.Ordinal)
+				&& float.TryParse(arg.AsSpan("--autoplay-timescale=".Length), out float timeScale))
+			{
+				AutoplayTimeScale = timeScale;
+			}
+		}
+
+		if (AutoplayEnabled)
+		{
+			Engine.TimeScale = AutoplayTimeScale;
+			string stopCondition = AutoplayMaxTrials > 0 ? $"stopping after {AutoplayMaxTrials} trial(s)" : "running until stopped externally";
+			GD.Print($"[Autoplay] Enabled — bot-driven trials, Engine.TimeScale={AutoplayTimeScale}, {stopCondition}.");
+		}
+
 		RequestNextGenomeAndRegenerateAsync();
 	}
 
@@ -228,6 +285,15 @@ public partial class GameManager : Node3D
 
 		_adaptationDirector.Tick(delta);
 		_sinceLastAttackSeconds += delta;
+
+		if (AutoplayEnabled)
+		{
+			// Equivalent to a human holding the attack key down — the actual
+			// rate is still governed by _attackCooldownTimer in
+			// HandlePlayerAttack, and TryAttackNearestEnemy no-ops when
+			// nothing is in range, so this is safe to set unconditionally.
+			_attackRequested = true;
+		}
 
 		HandlePlayerInput(delta);
 		HandlePlayerAttack(delta);
@@ -389,7 +455,8 @@ public partial class GameManager : Node3D
 				TrapsTriggered = _trialTrapsTriggered,
 				ExplorationPercent = explorationPercent,
 				ExitReached = exitReached,
-				QuitEarly = quitEarly
+				QuitEarly = quitEarly,
+				EnemyBehaviorBreakdown = _behaviorTelemetry.Snapshot()
 			};
 
 			if (_backendAvailable && !string.IsNullOrEmpty(_currentGenomeId))
@@ -397,7 +464,8 @@ public partial class GameManager : Node3D
 				ReportOutcomeResponse? result = await _apiClient.ReportOutcomeAsync(new ReportOutcomeRequest
 				{
 					GenomeId = _currentGenomeId,
-					Telemetry = telemetry
+					Telemetry = telemetry,
+					EvaluatorType = AutoplayEnabled ? "bot" : "human"
 				});
 
 				LastTrialResultMessage = result != null
@@ -407,6 +475,17 @@ public partial class GameManager : Node3D
 			else
 			{
 				LastTrialResultMessage = "LOCAL MODE — BACKEND OFFLINE";
+			}
+
+			if (AutoplayEnabled)
+			{
+				_autoplayTrialsCompleted++;
+				if (AutoplayMaxTrials > 0 && _autoplayTrialsCompleted >= AutoplayMaxTrials)
+				{
+					GD.Print($"[Autoplay] Reached AutoplayMaxTrials={AutoplayMaxTrials} — quitting.");
+					GetTree().Quit();
+					return;
+				}
 			}
 
 			await RequestNextGenomeAsync();
@@ -541,6 +620,7 @@ public partial class GameManager : Node3D
 		_trialTrapsTriggered = 0;
 		_trialChestsOpened = 0;
 		_trialReported = false;
+		_behaviorTelemetry.Reset();
 
 		GenerateDungeon();
 		BuildLevel();
@@ -1179,11 +1259,17 @@ void fragment() {
 			enemy.Initialize(spawnPoints[i], definition.Behavior, definition);
 			enemy.Position = GridToWorld(spawnPoints[i]) + new Vector3(0, 0.4f, 0);
 			enemy.TacticalOrder = _adaptationDirector.CreateOrderForNewEnemy(_playerProfile);
-			enemy.EnemyAttackedPlayer += OnEnemyAttackedPlayer;
+			bool isAdapted = enemy.TacticalOrder.GuardRear || enemy.TacticalOrder.SearchLastKnownPosition;
+			// Captured by value in the lambda (not the mutable loop variable)
+			// so OnEnemyAttackedPlayer can attribute the hit to the archetype
+			// that actually threw it, for the per-archetype telemetry below.
+			EnemyController spawnedEnemy = enemy;
+			enemy.EnemyAttackedPlayer += damage => OnEnemyAttackedPlayer(damage, spawnedEnemy, isAdapted);
 			_enemyRoot.AddChild(enemy);
 			_enemies.Add(enemy);
+			_behaviorTelemetry.RecordSpawn(definition.Behavior, isAdapted);
 
-			if (enemy.TacticalOrder.GuardRear || enemy.TacticalOrder.SearchLastKnownPosition)
+			if (isAdapted)
 			{
 				adaptedSpawnCount++;
 			}
@@ -1255,7 +1341,7 @@ void fragment() {
 			return;
 		}
 
-		Vector2I direction = GetMovementDirection();
+		Vector2I direction = AutoplayEnabled ? GetBotMovementDirection() : GetMovementDirection();
 		if (direction == Vector2I.Zero)
 		{
 			_moveTimer = 0;
@@ -1306,6 +1392,42 @@ void fragment() {
 		}
 
 		return best;
+	}
+
+	// --- Scripted bot evaluator movement (see AutoplayEnabled above) ---
+
+	private Vector2I GetBotMovementDirection()
+	{
+		EnemyController? nearestEnemy = FindNearestAliveEnemy(_playerPos);
+		GridPoint? threatPos = nearestEnemy != null ? ToGridPoint(nearestEnemy.GridPos) : null;
+
+		GridPoint step = BotPlayerPolicy.DecideMove(
+			ToGridPoint(_playerPos), ToGridPoint(_exitPos), threatPos,
+			_playerCurrentHp, _playerStats.MaxHp, _tiles);
+
+		return new Vector2I(step.X, step.Y);
+	}
+
+	private EnemyController? FindNearestAliveEnemy(Vector2I from)
+	{
+		EnemyController? nearest = null;
+		int bestDistance = int.MaxValue;
+		foreach (EnemyController enemy in _enemies)
+		{
+			if (enemy.CurrentHp <= 0)
+			{
+				continue;
+			}
+
+			int distance = Math.Abs(enemy.GridPos.X - from.X) + Math.Abs(enemy.GridPos.Y - from.Y);
+			if (distance < bestDistance)
+			{
+				bestDistance = distance;
+				nearest = enemy;
+			}
+		}
+
+		return nearest;
 	}
 
 	private void HandlePlayerAttack(double delta)
@@ -1375,6 +1497,8 @@ void fragment() {
 		_sinceLastAttackSeconds = 0.0;
 
 		int damage = Math.Max(1, _playerStats.Attack - target.Stats.Defense);
+		bool targetIsAdapted = target.TacticalOrder.GuardRear || target.TacticalOrder.SearchLastKnownPosition;
+		_behaviorTelemetry.RecordPlayerHitOnEnemy(target.BehaviorType, targetIsAdapted, damage, direction == AttackDirection.Rear);
 		target.TakeDamage(damage, direction);
 
 		if (target.CurrentHp <= 0)
@@ -1382,6 +1506,7 @@ void fragment() {
 			_score += target.Stats.Reward;
 			_trialEnemiesKilled++;
 			_playerTelemetry.RecordEnemyKilled();
+			_behaviorTelemetry.RecordKilledByPlayer(target.BehaviorType, targetIsAdapted);
 			PlaySfx(Sfx.EnemyDied);
 		}
 		else
@@ -1442,12 +1567,13 @@ void fragment() {
 		slashTween.TweenCallback(Callable.From(slash.QueueFree));
 	}
 
-	private void OnEnemyAttackedPlayer(int rawDamage)
+	private void OnEnemyAttackedPlayer(int rawDamage, EnemyController source, bool sourceIsAdapted)
 	{
 		int mitigated = Math.Max(1, rawDamage - _playerStats.Defense);
 		_playerCurrentHp = Math.Max(0, _playerCurrentHp - mitigated);
 		_trialDamageTaken += mitigated;
 		_playerTelemetry.RecordPlayerDamaged();
+		_behaviorTelemetry.RecordAttackOnPlayer(source.BehaviorType, sourceIsAdapted, mitigated);
 		PlaySfx(Sfx.PlayerHurt);
 
 		if (_playerCurrentHp <= 0)

@@ -4,6 +4,7 @@
 
 # Godot 4 internal cache and metadata directory
 .godot/
+*.uid
 
 # Godot 3 / Legacy import cache (if any)
 .import/
@@ -110,5 +111,6 @@ Backend/__pycache__/
 Backend/**/__pycache__/
 Backend/*.egg-info/
 Backend/data/
+Backend/reports/
 Backend/.pytest_cache/
 *.pyc

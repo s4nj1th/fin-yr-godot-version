@@ -155,3 +155,52 @@ class TestMCCManagerFlow:
 
         reloaded = MCCManager()
         assert reloaded.hall_of_fame_size == 1
+
+
+class TestEvaluatorTypeTagging:
+    """See docs/EVOLUTIONARY_DESIGN.md 'Scripted bot evaluator' — bot trials
+    go through the exact same pass/fail path as human ones, just labeled."""
+
+    def test_defaults_to_human_and_grows_the_hall_of_fame_the_same_way(self):
+        manager = MCCManager()
+        candidate, _ = manager.get_next_candidate()
+
+        passed, _ = manager.report_outcome(candidate["id"], make_telemetry())
+
+        assert passed is True
+        assert manager.hall_of_fame[0]["evaluator_type"] == "human"
+        assert manager.stats["human_evaluations"] == 1
+        assert manager.stats["bot_evaluations"] == 0
+
+    def test_bot_trials_are_tagged_and_counted_separately(self):
+        manager = MCCManager()
+        candidate, _ = manager.get_next_candidate()
+
+        passed, _ = manager.report_outcome(candidate["id"], make_telemetry(), evaluator_type="bot")
+
+        assert passed is True
+        assert manager.hall_of_fame[0]["evaluator_type"] == "bot"
+        assert manager.stats["human_evaluations"] == 0
+        assert manager.stats["bot_evaluations"] == 1
+        # A bot trial is still a real evaluation, not a surrogate guess.
+        assert manager.hall_of_fame[0]["decision_source"] == "human"
+
+    def test_human_and_bot_counts_together_equal_total_real_evaluations(self):
+        manager = MCCManager()
+
+        candidate_a, _ = manager.get_next_candidate()
+        manager.report_outcome(candidate_a["id"], make_telemetry(), evaluator_type="human")
+        candidate_b, _ = manager.get_next_candidate()
+        manager.report_outcome(candidate_b["id"], make_telemetry(exit_reached=False, quit_early=True), evaluator_type="bot")
+
+        stats = manager.stats
+        assert stats["human_evaluations"] + stats["bot_evaluations"] == stats["real_evaluations"] == 2
+
+    def test_evaluator_type_survives_state_reload(self, tmp_path):
+        manager = MCCManager()
+        candidate, _ = manager.get_next_candidate()
+        manager.report_outcome(candidate["id"], make_telemetry(), evaluator_type="bot")
+
+        reloaded = MCCManager()
+        assert reloaded.stats["bot_evaluations"] == 1
+        assert reloaded.hall_of_fame[0]["evaluator_type"] == "bot"

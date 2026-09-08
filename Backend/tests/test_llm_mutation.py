@@ -43,9 +43,12 @@ class TestIsAvailable:
         monkeypatch.setattr(config, "LLM_API_KEY", "")
         assert llm_mutation.is_available() is True
 
-    def test_default_repo_configuration_is_unavailable(self):
-        """A fresh checkout with no .env file must never call an LLM — this
+    def test_default_repo_configuration_is_unavailable(self, monkeypatch):
+        """A fresh checkout with default config must never call an LLM — this
         is what keeps the core evolutionary loop LLM-free by construction."""
+        monkeypatch.setattr(config, "LLM_MUTATION_MODE", "auto")
+        monkeypatch.setattr(config, "LLM_PROVIDER", "anthropic")
+        monkeypatch.setattr(config, "LLM_API_KEY", "")
         assert config.LLM_API_KEY == ""
         assert llm_mutation.is_available() is False
 
