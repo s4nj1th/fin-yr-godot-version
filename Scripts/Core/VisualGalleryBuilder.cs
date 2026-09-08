@@ -145,9 +145,9 @@ public partial class VisualGalleryBuilder : Node3D
         // Default room if fails
         if (rooms.Count == 0)
         {
-            var r = (W / 2 - 4, H / 2 - 4, 8, 8);
+            (int X, int Y, int w, int h) r = (W / 2 - 4, H / 2 - 4, 8, 8);
             rooms.Add(r);
-            for (int ry = r.Item2; ry < r.Item2 + r.h; ry++)
+            for (int ry = r.Y; ry < r.Y + r.h; ry++)
                 for (int rx = r.X; rx < r.X + r.w; rx++)
                     tiles[ry, rx] = 1;
         }
