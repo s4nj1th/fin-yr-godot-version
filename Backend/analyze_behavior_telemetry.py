@@ -9,13 +9,18 @@ Run with:
     pip install -r requirements-analysis.txt
     python analyze_behavior_telemetry.py [--log PATH] [--output-dir DIR] [--evaluator all|human|bot]
 
-Produces up to four PNGs in --output-dir (default reports/):
+Produces up to five PNGs in --output-dir (default reports/):
     genome_mix_evolution.png   - always, from every report_outcome trial ever logged
     archetype_profile.png      - per-archetype combat comparison
     archetype_evolution.png    - per-archetype combat metrics across generations
     situational_comparison.png - baseline vs. adapted, per archetype
+    archetype_outliers.png     - per-trial spread per archetype, statistical outliers marked
 
-The latter three need trials played with the EnemyBehaviorTelemetry-
+Plus a console-only threshold report (no PNG — see print_threshold_report)
+listing every trial that crossed a config.THRESHOLDS boundary (e.g. an
+unusually crowded dungeon, an archetype dealing disproportionate damage).
+
+The latter four need trials played with the EnemyBehaviorTelemetry-
 instrumented client (Scripts/AI/EnemyBehaviorTelemetry.cs) — every trial
 logged before that instrumentation existed has no per-archetype breakdown,
 so this script says so and skips them rather than plotting fabricated zeros.
@@ -64,6 +69,10 @@ SECONDARY_INK = "#52514e"
 MUTED_INK = "#898781"
 GRIDLINE = "#e1e0d9"
 AXIS_LINE = "#c3c2b7"
+# Reserved status color (dataviz skill's status palette, never reused for a
+# regular series) — marks statistical outlier points on plot_archetype_outliers
+# only. Never used to encode archetype/situation identity.
+STATUS_CRITICAL = "#d03b3b"
 
 METRIC_LABELS = {
     "damage_per_spawn": "Damage dealt to player / enemy spawned",
@@ -230,6 +239,107 @@ def plot_situational_comparison(events, output_dir: str, suffix: str = "") -> st
     return path
 
 
+def plot_archetype_outliers(events, output_dir: str, suffix: str = "") -> str | None:
+    """Box plots (per-archetype, per-trial distribution) with statistical
+    outliers marked — see docs/BEHAVIOR_ANALYTICS.md "Outliers and
+    thresholds". Distinct from the other three archetype charts: those
+    show one aggregated number per archetype; this shows the *spread*
+    across individual trials, so a single freak trial doesn't hide inside
+    an average. matplotlib's boxplot places fliers using the same 1.5xIQR
+    rule as behavior_analytics.find_iqr_outliers, so the marked points here
+    are exactly what that function would flag."""
+    events = ba.events_with_behavior_breakdown(events)
+    if not events:
+        print("[archetype_outliers] No trials with per-archetype combat telemetry yet — skipping.")
+        return None
+
+    metrics = list(METRIC_LABELS.keys())
+    fig, axes = plt.subplots(2, 2, figsize=(9, 7), dpi=150)
+    fig.patch.set_facecolor(CHART_SURFACE)
+
+    any_outliers = False
+    for ax, metric in zip(axes.flat, metrics):
+        per_archetype = ba.per_trial_archetype_metric_values(events, metric)
+        archetypes = _archetype_order(per_archetype.keys())
+        data = [per_archetype[a] for a in archetypes]
+
+        box = ax.boxplot(
+            data, tick_labels=archetypes, patch_artist=True, widths=0.5,
+            flierprops={"marker": "x", "markerfacecolor": STATUS_CRITICAL, "markeredgecolor": STATUS_CRITICAL,
+                        "markersize": 7},
+            medianprops={"color": PRIMARY_INK},
+            whiskerprops={"color": AXIS_LINE}, capprops={"color": AXIS_LINE},
+        )
+        for patch, archetype in zip(box["boxes"], archetypes):
+            patch.set_facecolor(ARCHETYPE_COLORS.get(archetype, MUTED_INK))
+            patch.set_alpha(0.55)
+            patch.set_edgecolor(ARCHETYPE_COLORS.get(archetype, MUTED_INK))
+
+        if any(len(fl.get_xdata()) > 0 for fl in box["fliers"]):
+            any_outliers = True
+
+        ax.set_xticklabels(archetypes, rotation=20, ha="right")
+        _style_axis(ax, METRIC_LABELS[metric])
+
+    title_suffix = f" — evaluator: {suffix}" if suffix else ""
+    outlier_note = "red x = statistical outlier (1.5x IQR)" if any_outliers else "no statistical outliers found"
+    fig.suptitle(f"Per-trial spread by archetype ({outlier_note}{title_suffix})",
+                 color=PRIMARY_INK, fontsize=11, wrap=True)
+    path = _output_path(output_dir, "archetype_outliers", suffix)
+    fig.tight_layout()
+    fig.savefig(path, facecolor=CHART_SURFACE)
+    plt.close(fig)
+    return path
+
+
+def print_threshold_report(events) -> None:
+    """Console-only, not a chart: lists every trial that crossed a
+    config.THRESHOLDS boundary (see docs/BEHAVIOR_ANALYTICS.md). Kept as
+    text rather than a fifth PNG since the payload is "which specific
+    genome_id and why," not a shape that benefits from a plot."""
+    events = ba.events_with_behavior_breakdown(events)
+    flagged = ba.flag_threshold_exceeding(events)
+    if not flagged:
+        print("[threshold_report] No trials crossed a config.THRESHOLDS boundary.")
+    else:
+        print(f"[threshold_report] {len(flagged)} trial(s) crossed a threshold:")
+        for record in flagged:
+            genome_id = record["genome_id"] or "(unknown)"
+            print(f"  gen {record['generation']} — genome {genome_id}:")
+            for reason in record["reasons"]:
+                print(f"    - {reason}")
+
+    print()
+    _print_situational_shift_report(events)
+
+
+def _print_situational_shift_report(events) -> None:
+    """Console-only subsection of the threshold report: flags archetype/metric
+    combinations where the aggregate behavior shifts substantially between
+    baseline and adapted situations (see behavior_analytics.flag_situational_shift
+    and docs/BEHAVIOR_ANALYTICS.md "Situational shift"). This is the answer to
+    "how does behavior differ across situations" — not per-trial or per-archetype
+    raw-value outliers, but a difference *between the two situations themselves*,
+    collapsed across all trials so it speaks to the archetype-level pattern rather
+    than any individual genome."""
+    shifted = ba.flag_situational_shift(events)
+    if not shifted:
+        print("[situational_shift] No archetype/metric pairs crossed the situational-shift threshold.")
+        return
+
+    print(f"[situational_shift] {len(shifted)} archetype/metric pair(s) show a "
+          f"meaningful shift between baseline and adapted situations "
+          f"(threshold: |Δ| ≥ {config.THRESHOLDS.get('high_situational_shift_pct', 0.5):.0%}):")
+    for record in shifted:
+        pct = record["percent_change"]
+        pct_str = f"{pct:+.0%}" if pct != float("inf") else "∞ (baseline was zero)"
+        print(
+            f"  {record['archetype']} — {record['metric']}: "
+            f"baseline={record['baseline']:.3f}, adapted={record['adapted']:.3f}, "
+            f"Δ={record['delta']:+.3f} ({pct_str})"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     parser.add_argument("--log", default=config.SESSION_LOG_FILE, help="Path to session_log.jsonl")
@@ -257,8 +367,12 @@ def main() -> None:
         plot_archetype_profile(events, args.output_dir, suffix),
         plot_archetype_evolution(events, args.output_dir, suffix),
         plot_situational_comparison(events, args.output_dir, suffix),
+        plot_archetype_outliers(events, args.output_dir, suffix),
     ]
     generated = [p for p in generated if p]
+
+    print()
+    print_threshold_report(events)
 
     if not generated:
         print("Nothing to plot yet.")

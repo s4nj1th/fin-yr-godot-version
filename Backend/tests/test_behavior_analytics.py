@@ -193,6 +193,94 @@ class TestGenomeMixSeries:
         assert ba.genome_mix_series(events) == []
 
 
+class TestFindIqrOutliers:
+    def test_returns_empty_below_four_samples(self):
+        assert ba.find_iqr_outliers([1.0, 2.0, 100.0]) == []
+
+    def test_flags_a_clear_high_outlier(self):
+        values = [10.0, 11.0, 9.0, 10.5, 9.5, 100.0]
+        assert ba.find_iqr_outliers(values) == [5]
+
+    def test_no_outliers_in_a_tight_cluster(self):
+        values = [10.0, 10.5, 11.0, 9.5, 10.2, 9.8]
+        assert ba.find_iqr_outliers(values) == []
+
+
+class TestArchetypeStatisticalOutliers:
+    def test_flags_the_archetype_with_a_wild_trial_and_omits_the_rest(self):
+        events = [
+            make_event(0, {
+                "melee_chaser": {"baseline": counters(spawned=5, damage_dealt_to_player=25), "adapted": counters()},
+                "ranged_kite": {"baseline": counters(spawned=5, damage_dealt_to_player=25), "adapted": counters()},
+            }),
+            make_event(1, {
+                "melee_chaser": {"baseline": counters(spawned=5, damage_dealt_to_player=27), "adapted": counters()},
+                "ranged_kite": {"baseline": counters(spawned=5, damage_dealt_to_player=26), "adapted": counters()},
+            }),
+            make_event(2, {
+                "melee_chaser": {"baseline": counters(spawned=5, damage_dealt_to_player=24), "adapted": counters()},
+                "ranged_kite": {"baseline": counters(spawned=5, damage_dealt_to_player=25), "adapted": counters()},
+            }),
+            make_event(3, {
+                # melee_chaser stays consistent; ranged_kite spikes wildly.
+                "melee_chaser": {"baseline": counters(spawned=5, damage_dealt_to_player=26), "adapted": counters()},
+                "ranged_kite": {"baseline": counters(spawned=5, damage_dealt_to_player=500), "adapted": counters()},
+            }),
+        ]
+
+        outliers = ba.archetype_statistical_outliers(events, "damage_per_spawn")
+
+        assert "melee_chaser" not in outliers
+        assert outliers["ranged_kite"] == [100.0]
+
+
+class TestFlagThresholdExceeding:
+    def test_flags_high_enemy_count(self):
+        events = [make_event(0, {}, params=None)]
+        events[0]["telemetry"]["total_enemies"] = 90
+
+        flagged = ba.flag_threshold_exceeding(events)
+
+        assert len(flagged) == 1
+        assert any("high_enemy_count" in r for r in flagged[0]["reasons"])
+
+    def test_flags_near_max_deaths(self):
+        events = [make_event(0, {})]
+        events[0]["telemetry"]["deaths_retries"] = 2  # config.MAX_DEATHS_ALLOWED - 1
+
+        flagged = ba.flag_threshold_exceeding(events)
+
+        assert any("near_max_deaths" in r for r in flagged[0]["reasons"])
+
+    def test_flags_archetype_high_damage_per_spawn(self):
+        events = [make_event(0, {
+            "ranged_strafe": {"baseline": counters(spawned=2, damage_dealt_to_player=100), "adapted": counters()},
+        })]
+
+        flagged = ba.flag_threshold_exceeding(events)
+
+        assert len(flagged) == 1
+        assert any("ranged_strafe: high_damage_per_spawn" in r for r in flagged[0]["reasons"])
+
+    def test_clean_trial_is_not_flagged(self):
+        events = [make_event(0, {
+            "melee_chaser": {"baseline": counters(spawned=5, damage_dealt_to_player=20, killed_by_player=2,
+                                                    hits_taken_from_player=4, rear_hits_taken=1),
+                              "adapted": counters()},
+        })]
+        events[0]["telemetry"]["total_enemies"] = 10
+        events[0]["telemetry"]["deaths_retries"] = 0
+
+        assert ba.flag_threshold_exceeding(events) == []
+
+    def test_custom_thresholds_override_config_defaults(self):
+        events = [make_event(0, {})]
+        events[0]["telemetry"]["total_enemies"] = 5
+
+        assert ba.flag_threshold_exceeding(events, thresholds={"high_enemy_count": 3}) != []
+        assert ba.flag_threshold_exceeding(events, thresholds={"high_enemy_count": 10}) == []
+
+
 class TestFilterByEvaluatorType:
     def test_all_returns_every_event_unfiltered(self):
         events = [
@@ -229,3 +317,91 @@ class TestCountByEvaluatorType:
         ]
 
         assert ba.count_by_evaluator_type(events) == {"human": 2, "bot": 2}
+
+
+class TestArchetypeSituationShift:
+    def test_computes_delta_and_percent_change(self):
+        events = [make_event(0, {
+            "melee_chaser": {
+                "baseline": counters(spawned=4, damage_dealt_to_player=8),   # 2.0 dps
+                "adapted": counters(spawned=4, damage_dealt_to_player=16),  # 4.0 dps
+            }
+        })]
+
+        shifts = ba.archetype_situation_shift(events, "damage_per_spawn")
+
+        assert "melee_chaser" in shifts
+        rec = shifts["melee_chaser"]
+        assert rec["baseline"] == 2.0
+        assert rec["adapted"] == 4.0
+        assert rec["delta"] == 2.0
+        assert rec["percent_change"] == 1.0  # 100% increase
+
+    def test_baseline_zero_returns_inf_if_adapted_nonzero(self):
+        events = [make_event(0, {
+            "ranged_kite": {
+                "baseline": counters(spawned=0, damage_dealt_to_player=0),
+                "adapted": counters(spawned=2, damage_dealt_to_player=10),  # 5.0 dps
+            }
+        })]
+
+        shifts = ba.archetype_situation_shift(events, "damage_per_spawn")
+
+        rec = shifts["ranged_kite"]
+        assert rec["baseline"] == 0.0
+        assert rec["adapted"] == 5.0
+        assert rec["delta"] == 5.0
+        assert rec["percent_change"] == float("inf")
+
+    def test_no_change_returns_zero_delta_and_pct(self):
+        events = [make_event(0, {
+            "ranged_strafe": {
+                "baseline": counters(spawned=5, damage_dealt_to_player=10),
+                "adapted": counters(spawned=5, damage_dealt_to_player=10),
+            }
+        })]
+
+        shifts = ba.archetype_situation_shift(events, "damage_per_spawn")
+
+        rec = shifts["ranged_strafe"]
+        assert rec["delta"] == 0.0
+        assert rec["percent_change"] == 0.0
+
+
+class TestFlagSituationalShift:
+    def test_flags_shifts_exceeding_threshold(self):
+        events = [make_event(0, {
+            "melee_chaser": {
+                "baseline": counters(spawned=4, damage_dealt_to_player=8),   # 2.0 dps
+                "adapted": counters(spawned=4, damage_dealt_to_player=16),  # 4.0 dps (+100%)
+            },
+            "ranged_kite": {
+                "baseline": counters(spawned=10, damage_dealt_to_player=10),  # 1.0 dps
+                "adapted": counters(spawned=10, damage_dealt_to_player=11),  # 1.1 dps (+10%)
+            }
+        })]
+
+        flagged = ba.flag_situational_shift(events, metrics=["damage_per_spawn"], threshold_pct=0.5)
+
+        assert len(flagged) == 1
+        assert flagged[0]["archetype"] == "melee_chaser"
+        assert flagged[0]["metric"] == "damage_per_spawn"
+        assert flagged[0]["baseline"] == 2.0
+        assert flagged[0]["adapted"] == 4.0
+        assert flagged[0]["delta"] == 2.0
+        assert flagged[0]["percent_change"] == 1.0
+
+    def test_baseline_zero_adapted_nonzero_always_flagged(self):
+        events = [make_event(0, {
+            "ranged_kite": {
+                "baseline": counters(spawned=0),
+                "adapted": counters(spawned=2, damage_dealt_to_player=10),
+            }
+        })]
+
+        flagged = ba.flag_situational_shift(events, metrics=["damage_per_spawn"], threshold_pct=0.5)
+
+        assert len(flagged) == 1
+        assert flagged[0]["archetype"] == "ranged_kite"
+        assert flagged[0]["percent_change"] == float("inf")
+

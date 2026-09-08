@@ -69,6 +69,47 @@ LLM_LOCAL_BASE_URL = os.getenv("LLM_LOCAL_BASE_URL", "http://localhost:11434")
 LLM_MUTATION_HISTORY_SIZE = 10  # how many recent outcomes to show the LLM as context
 LLM_REQUEST_TIMEOUT_SECONDS = 30  # local inference on a laptop GPU is slower than a hosted API
 
+# --- Outlier / threshold analysis (Backend/behavior_analytics.py) ---
+# Domain thresholds for flagging a trial or an archetype's outcome in one
+# trial as crossing a game-design-meaningful boundary — distinct from
+# statistical outlier detection (behavior_analytics.find_iqr_outliers),
+# which needs no fixed number, just relative spread within the data
+# collected so far. Same status as every other constant in this file:
+# starting points, not load-bearing science — tune once real trial volume
+# exists. See docs/BEHAVIOR_ANALYTICS.md "Outliers and thresholds".
+THRESHOLDS = {
+    # The main dungeon caps spawns at 120 (Scripts/Core/GameManager.cs
+    # SpawnEnemies); a trial spawning more than half that is a
+    # crowded/high-density outlier worth a second look. 2 or fewer is the
+    # opposite extreme — barely any encounter happened at all.
+    "high_enemy_count": 60,
+    "low_enemy_count": 2,
+    # One archetype dealing more than this much damage per enemy spawned
+    # (baseline+adapted combined) in a single trial is disproportionate —
+    # either a genuinely overtuned archetype/difficulty combination or a
+    # telemetry bug worth checking before trusting the chart it feeds.
+    "high_damage_per_spawn": 40.0,
+    # More than half of hits taken coming from the rear suggests an
+    # archetype that's trivially exploitable once a player/bot finds the
+    # blind spot, not just ordinary variance.
+    "high_rear_hit_rate": 0.5,
+    # Near-invincible or paper-thin are both balance red flags.
+    "low_kill_rate": 0.05,
+    "high_kill_rate": 0.9,
+    # Mirrors MAX_DEATHS_ALLOWED above but as an early-warning threshold —
+    # a trial with this many deaths still passed the minimal criterion but
+    # is right at the edge of failing it.
+    "near_max_deaths": MAX_DEATHS_ALLOWED - 1,
+    # How much an archetype's aggregate behavior is allowed to shift
+    # between situations (baseline vs. adapted — see
+    # EnemyBehaviorTelemetry.cs / AdaptationDirector) before it's flagged
+    # as a meaningful situational difference rather than ordinary noise.
+    # 0.5 = a 50% change in either direction. This is the primary knob for
+    # "how does behavior differ across situations" (behavior_analytics.
+    # flag_situational_shift) — see docs/BEHAVIOR_ANALYTICS.md.
+    "high_situational_shift_pct": 0.5,
+}
+
 DATA_DIR = os.path.join(_BACKEND_DIR, "data")
 STATE_FILE = os.path.join(DATA_DIR, "mcc_state.json")
 SESSION_LOG_FILE = os.path.join(DATA_DIR, "session_log.jsonl")

@@ -115,9 +115,9 @@ once you trust the bot's data is a reasonable proxy, but comparing
 check that before trusting it. Filtered runs get a `_human`/`_bot`
 filename suffix so they don't overwrite the combined charts.
 
-Four charts, generated independently — later ones are skipped (with a
-printed reason, not a silent gap) if their prerequisite data isn't there
-yet:
+Five charts (plus a console-only threshold report), generated
+independently — later ones are skipped (with a printed reason, not a
+silent gap) if their prerequisite data isn't there yet:
 
 1. **`genome_mix_evolution.png`** — average `enemy_behavior_mix` weight per
    archetype, per generation. Works on *every* `report_outcome` trial ever
@@ -138,6 +138,87 @@ yet:
    countermeasure actually change this archetype's outcomes" — the
    concrete "different situations" comparison, using the real per-enemy
    attribution described above, not an estimate.
+5. **`archetype_outliers.png`** — box plot of the per-trial *spread* for
+   each archetype/metric, with statistical outlier trials marked. See
+   "Outliers and thresholds" below — this is the chart (plus the console
+   threshold report) that turns "here's an average" into "here's what's
+   actually unusual and worth a second look."
+
+## Outliers and thresholds
+
+The four charts above show *aggregates* — one number (or one bar per
+situation) per archetype. That hides two things worth surfacing
+separately, because they answer different questions than "what's the
+average":
+
+1. **Statistical outliers** — a single trial where an archetype behaved
+   very differently from its *own* other trials. `damage_per_spawn`
+   averaging to 8 across 20 trials could mean "consistently 7-9," or it
+   could mean "consistently ~5, except one trial where it spiked to 80" —
+   the average can't tell those apart, and they mean very different
+   things (the first is a stable archetype; the second is either a real
+   edge-case genome or a telemetry bug). `behavior_analytics.find_iqr_outliers`
+   (Tukey's fences: below Q1-1.5×IQR or above Q3+1.5×IQR, needs ≥4 samples)
+   flags these per archetype per metric — data-driven, no fixed number.
+   `plot_archetype_outliers` renders it as a box plot per metric with
+   outlier trials marked as a red `x`.
+2. **Threshold-exceeding trials** — a trial that crosses a fixed,
+   game-design-meaningful boundary regardless of what the rest of the data
+   looks like. `config.THRESHOLDS` (e.g. `high_enemy_count: 60` — the main
+   dungeon caps spawns at 120, so a trial spawning more than half that is
+   worth a look; `near_max_deaths: 2` — one death short of failing the
+   minimal criterion outright) — see `config.py`'s own comments for the
+   full list and reasoning per threshold. `flag_threshold_exceeding`
+   returns one record per crossed trial naming every threshold it hit;
+   `analyze_behavior_telemetry.py` prints this as a console report (no PNG
+   — the payload is "which genome_id and why," not a shape).
+3. **Situational shift** — how aggregate archetype behavior changes across
+   *situations* (baseline vs. adapted enemy states), answering "how does
+   behavior differ across situation A and situation B" at the aggregate level.
+   `archetype_situation_shift` computes the `baseline`, `adapted`, `delta`, and
+   `percent_change` per archetype for a given metric. `flag_situational_shift`
+   filters to combinations where `|percent_change| >= config.THRESHOLDS["high_situational_shift_pct"]`
+   (0.5 = 50% shift) or where baseline == 0 and adapted > 0. Printed in the
+   console report alongside threshold-exceeding trials.
+
+**Why this matters here specifically, not just as a generic statistics
+feature:**
+
+- **MCC's minimal criterion is coarse** (`_evaluate_minimal_criterion` only
+  checks exit-reached/quit/time/deaths). A genome can pass it while
+  producing something degenerate — e.g. 118 enemies crammed into a small
+  room, or one archetype dealing 10x its usual damage because a difficulty
+  roll interacted badly with a density roll. The minimal criterion has no
+  way to catch that; threshold/outlier scanning over the Hall of Fame does,
+  cheaply, without playing every genome again.
+- **It's the sharper version of "how is archetype A different from
+  archetype B."** A bar chart says "ranged_kite deals more damage on
+  average." An outlier scan says "ranged_kite is usually comparable to the
+  others, except in this one genome where it's wildly disproportionate" —
+  a stronger, more specific claim, and the kind of finding worth actually
+  writing up.
+- **It's a cheap first step toward the "no MAP-Elites-style
+  quality-diversity archive yet" gap** already named in
+  [EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md)'s known scope
+  boundaries. Bucketing the Hall of Fame by threshold-crossed vs. not
+  (or by which threshold) is a crude behavioral-descriptor split — not a
+  real QD grid, but the same idea in miniature, and a natural place to
+  grow from if a proper MAP-Elites archive gets built later.
+- **It's a bug-detection tripwire.** The mislabeled-evaluator bug found
+  while building the bot evaluator (see `HANDOFF_BOT_TELEMETRY.md`) is
+  exactly the kind of thing an outlier scan would have caught faster than
+  eyeballing an averaged chart — an archetype's `damage_per_spawn` jumping
+  10x in one trial is either a great thesis finding or a bug, and the
+  outlier flag forces that question to get asked instead of silently
+  averaging it away.
+
+**Honest limitation**: with few trials per archetype (single digits),
+count-based ratios like `rear_hit_rate` produce noisy-looking "outliers"
+that are really just small-sample variance, not a real pattern — Tukey's
+fences don't know the difference between "genuinely unusual" and "not
+enough data yet." Treat outlier flags as *leads to investigate*, not
+conclusions, until archetype sample sizes are large enough that the
+spread itself is trustworthy.
 
 Color usage follows this project's dataviz convention: a fixed hue is
 assigned per archetype identity (`ARCHETYPE_COLORS` in
@@ -152,11 +233,9 @@ scale with a differently-scaled one.
 ## Honest limitations (don't oversell these in a writeup)
 
 - **Sparse real data, same as the rest of the human-coupled loop.** As of
-  this writing `session_log.jsonl` has 24 real trials, none carrying
-  `enemy_behavior_breakdown` yet (it predates this instrumentation) — the
-  three archetype charts need newly-played trials with the updated client
-  to populate. `genome_mix_evolution.png` is the only chart with existing
-  data to plot immediately.
+  this writing `session_log.jsonl` has 35 total entries (25 tagged human, 10 bot;
+  29 with complete `enemy_behavior_breakdown` telemetry).`genome_mix_evolution.png`
+  is the only chart with historical data across all trials.
 - **The scripted bot evaluator (`EVOLUTIONARY_DESIGN.md` "Scripted bot
   evaluator") is a fast way to grow volume, not a validated stand-in for a
   human.** It's a deliberately simple exit-rushing heuristic. Every bot
