@@ -1,94 +1,71 @@
 """
-Live Evolutionary Metrics Dashboard
+Live dashboard: re-reads the event log every two seconds while someone plays
+and redraws one player's archive growth and the enemy genes of the designs
+being tried.
 
-This script continuously monitors the `session_log.jsonl` file.
-As you play the game in Godot, the backend writes to this log.
-This script reads the new data and updates the matplotlib charts in real-time.
-
-Run with:
-    python live_dashboard.py
+    python live_dashboard.py --player default
 """
 
-import json
-import os
-import time
+from __future__ import annotations
+
+import argparse
+
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
-BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BACKEND_DIR, "data")
-LOG_FILE = os.path.join(DATA_DIR, "session_log.jsonl")
+import config
+from generate_metrics_plots import load_events
 
-def load_data():
-    records = []
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    try:
-                        records.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-    return records
 
-def update(frame):
-    records = load_data()
-        
-    plt.clf()  # Clear current figure
-    
-    # We will plot 2 subplots for the live demo
-    ax1 = plt.subplot(1, 2, 1)
-    ax2 = plt.subplot(1, 2, 2)
-    
-    # Set titles and labels even if there's no data yet
-    ax1.set_title("Live Archive Growth (Hall of Fame)", fontweight='bold')
-    ax1.set_xlabel("Generation")
-    ax1.set_ylabel("Archive Size")
-    ax1.grid(True, linestyle="--", alpha=0.5)
-    
-    ax2.set_title("Live Map Trajectories", fontweight='bold')
-    ax2.set_xlabel("Generation")
-    ax2.set_ylabel("Gene Value")
-    ax2.grid(True, linestyle="--", alpha=0.5)
-    
-    if not records:
-        ax1.text(0.5, 0.5, "Waiting for first dungeon completion...", 
-                 horizontalalignment='center', verticalalignment='center', 
-                 transform=ax1.transAxes, color='gray')
-        ax2.text(0.5, 0.5, "Waiting for first dungeon completion...", 
-                 horizontalalignment='center', verticalalignment='center', 
-                 transform=ax2.transAxes, color='gray')
+def make_update(player_id: str, log_path: str):
+    def update(_frame):
+        events = load_events(log_path, player_id)
+        plt.clf()
+        ax1 = plt.subplot(1, 2, 1)
+        ax2 = plt.subplot(1, 2, 2)
+        ax1.set_title(f"Archive size — player '{player_id}'", fontweight="bold")
+        ax1.set_xlabel("Playthroughs")
+        ax1.set_ylabel("Designs in archive")
+        ax2.set_title("Enemy genes of designs tried (last 50)", fontweight="bold")
+        ax2.set_xlabel("Design")
+        ax2.set_ylabel("Gene value")
+        for ax in (ax1, ax2):
+            ax.grid(True, linestyle="--", alpha=0.5)
+
+        if not events:
+            for ax in (ax1, ax2):
+                ax.text(0.5, 0.5, "Waiting for the first trial...", ha="center", va="center",
+                        transform=ax.transAxes, color="gray")
+            plt.tight_layout()
+            return
+
+        plays, sizes, played = [], [], 0
+        for e in events:
+            played += e["event"] == "report_outcome"
+            plays.append(played)
+            sizes.append(e.get("hall_of_fame_size", 0))
+        ax1.plot(plays, sizes, color="#0284c7", linewidth=2)
+
+        recent = events[-50:]
+        x = range(len(events) - len(recent) + 1, len(events) + 1)
+        ax2.plot(x, [e["params"]["enemy_density"] for e in recent], label="enemy density", color="#8b5cf6")
+        ax2.plot(x, [e["params"]["enemy_difficulty_scale"] for e in recent], label="difficulty scale", color="#0f172a")
+        ax2.legend()
         plt.tight_layout()
-        return
 
-    # Data extraction
-    generations = [r.get("generation", i) for i, r in enumerate(records)]
-    hof_sizes = [r.get("hall_of_fame_size", 0) for r in records]
-    
-    trap_densities = [r["params"].get("trap_density", 0) for r in records if "params" in r]
-    enemy_difficulties = [r["params"].get("enemy_difficulty_scale", 1.0) for r in records if "params" in r]
-    gens = list(range(1, len(trap_densities) + 1))
-    
-    # 1. Hall of Fame Growth
-    ax1.plot(generations[-50:], hof_sizes[-50:], marker='o', color='#0284c7', linewidth=2)
-    
-    # 2. Map Parameters Convergence
-    ax2.plot(gens[-50:], trap_densities[-50:], label="Trap Density", color='#ef4444', linewidth=2)
-    ax2.plot(gens[-50:], enemy_difficulties[-50:], label="Enemy Scale", color='#8b5cf6', linewidth=2)
-    ax2.legend()
-    
-    plt.tight_layout()
+    return update
+
 
 if __name__ == "__main__":
-    print("[Live Dashboard] Starting... Play the game to see charts update in real-time.")
-    print("Press Ctrl+C to stop.")
-    
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--player", default=config.DEFAULT_PLAYER_ID)
+    parser.add_argument("--log", default=config.SESSION_LOG_FILE)
+    args = parser.parse_args()
+
+    print(f"[Live Dashboard] Watching player '{args.player}'. Play the game to see the charts update. Ctrl+C stops.")
     fig = plt.figure(figsize=(12, 5))
-    fig.canvas.manager.set_window_title("Live Evolutionary Map Metrics")
-    
-    # Update every 2 seconds
-    ani = FuncAnimation(fig, update, interval=2000, cache_frame_data=False)
-    
+    fig.canvas.manager.set_window_title("Adaptive enemy evolution — live")
+    animation = FuncAnimation(fig, make_update(args.player, args.log), interval=2000, cache_frame_data=False)
     try:
         plt.show()
     except KeyboardInterrupt:

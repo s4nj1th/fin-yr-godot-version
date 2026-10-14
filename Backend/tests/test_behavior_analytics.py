@@ -405,3 +405,17 @@ class TestFlagSituationalShift:
         assert flagged[0]["archetype"] == "ranged_kite"
         assert flagged[0]["percent_change"] == float("inf")
 
+
+
+class TestFilterByPlayer:
+    def test_keeps_only_the_requested_player(self):
+        events = [{"player_id": "alice"}, {"player_id": "bot"}, {"player_id": "alice"}]
+        assert ba.filter_by_player(events, "alice") == [{"player_id": "alice"}, {"player_id": "alice"}]
+
+    def test_records_without_a_player_belong_to_the_default_player(self):
+        events = [{"evaluator_type": "human"}, {"player_id": "bot"}]
+        assert ba.filter_by_player(events, "default") == [{"evaluator_type": "human"}]
+
+    def test_all_keeps_everything(self):
+        events = [{"player_id": "alice"}, {}]
+        assert ba.filter_by_player(events, "all") == events

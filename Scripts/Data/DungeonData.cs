@@ -193,18 +193,24 @@ public class TelemetryMetrics
 }
 
 // --- Evolutionary-algorithm genome contract (Backend/models.py mirrors this) ---
-// A genome is a flat set of dungeon-generation + encounter parameters that the
-// Python MCC backend evolves. See docs/EVOLUTIONARY_DESIGN.md for the design
-// rationale (genotype, mutation, minimal criterion, surrogate gating).
+// A genome describes one enemy encounter (density, difficulty scale,
+// behaviour mix), which the Python backend evolves. The map and resource
+// fields are not evolved: the backend sends the same fixed values with every
+// genome (Backend/config.py FIXED_ENVIRONMENT), and the defaults below mirror
+// them so offline play builds the same dungeon. See
+// docs/EVOLUTIONARY_DESIGN.md for the design rationale.
 
 public class GenomeParams
 {
 	[JsonPropertyName("map_width")] public int MapWidth { get; set; } = 160;
 	[JsonPropertyName("map_height")] public int MapHeight { get; set; } = 160;
 	[JsonPropertyName("room_attempts")] public int RoomAttempts { get; set; } = 280;
-	[JsonPropertyName("trap_density")] public float TrapDensity { get; set; } = 0.25f;
-	[JsonPropertyName("chest_density")] public float ChestDensity { get; set; } = 0.25f;
-	[JsonPropertyName("heal_density")] public float HealDensity { get; set; } = 0.25f;
+	[JsonPropertyName("trap_density")] public float TrapDensity { get; set; } = 0.15f;
+	[JsonPropertyName("chest_density")] public float ChestDensity { get; set; } = 0.15f;
+	[JsonPropertyName("heal_density")] public float HealDensity { get; set; } = 0.15f;
+	// Seeds the layout generator so every trial is played on the same dungeon;
+	// 0 means a new random layout every trial.
+	[JsonPropertyName("map_seed")] public long MapSeed { get; set; } = 123;
 	[JsonPropertyName("enemy_density")] public float EnemyDensity { get; set; } = 0.25f;
 	[JsonPropertyName("enemy_behavior_mix")] public Dictionary<string, float> EnemyBehaviorMix { get; set; } = new()
 	{
@@ -233,6 +239,7 @@ public class SurrogateEstimate
 {
 	[JsonPropertyName("prob")] public float Prob { get; set; }
 	[JsonPropertyName("std")] public float Std { get; set; }
+	[JsonPropertyName("epistemic_std")] public float? EpistemicStd { get; set; }
 }
 
 public class NextCandidateResponse
@@ -251,6 +258,8 @@ public class ReportOutcomeRequest
 	// docs/EVOLUTIONARY_DESIGN.md "Scripted bot evaluator" and
 	// Backend/models.py's ReportOutcomeRequest.evaluator_type.
 	[JsonPropertyName("evaluator_type")] public string EvaluatorType { get; set; } = "human";
+	// Whose archive this trial belongs to (Backend/models.py player_id).
+	[JsonPropertyName("player_id")] public string PlayerId { get; set; } = "default";
 }
 
 public class ReportOutcomeResponse
@@ -258,6 +267,7 @@ public class ReportOutcomeResponse
 	[JsonPropertyName("passed")] public bool Passed { get; set; }
 	[JsonPropertyName("hall_of_fame_size")] public int HallOfFameSize { get; set; }
 	[JsonPropertyName("fail_reason")] public string? FailReason { get; set; }
+	[JsonPropertyName("player_id")] public string? PlayerId { get; set; }
 }
 
 public class TelemetryRequest

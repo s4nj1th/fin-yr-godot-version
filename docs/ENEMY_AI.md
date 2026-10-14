@@ -145,17 +145,16 @@ On attack, the controller emits `EnemyAttackedPlayer` with `Stats.Attack` and re
 
 ## 9. Test Scenes and Main Dungeon
 
-The project starts with [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn), which compares `melee_chaser` and `melee_hit_run` using the same stats. The ranged comparison is available in [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn), which compares `ranged_kite` and `ranged_strafe`.
+The game starts in [Main.tscn](../Main.tscn). Two sandbox scenes compare archetypes in isolation: [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn) (`melee_chaser` vs `melee_hit_run`, same stats) and [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn) (`ranged_kite` vs `ranged_strafe`), each in a 20x16 arena with fixed pillars.
 
-The main dungeon generates a large integer tile array, finds tiles marked with value `5`, and spawns up to 120 enemies. Definitions cycle through patrol, ambush, and patrol again. The test scenes use a 20x16 arena with fixed pillars; the main scene uses the generated map and its centered world transform.
+The main dungeon is built from the fixed map seed, finds the tiles marked `5` (enemy spawn), and spawns one enemy per spawn point, up to 120. Each enemy's archetype is drawn from the current design's `enemy_behavior_mix`, and its HP and attack are multiplied by the design's `enemy_difficulty_scale` (see [EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md)). The 8x8 debug board is disabled there for frame rate.
 
 ## 10. Current Limitations and Extension Points
 
-The current system is intentionally lightweight and easy to inspect. The next meaningful upgrades would be:
+The baseline movement described above is intentionally lightweight and easy to inspect. Enemies that receive a stealth countermeasure order already use line of sight within their vision range (`GridLineOfSight`) and breadth-first search (`GridPathfinder`) to search the player's last known position ([ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md)). Remaining upgrades:
 
-1. Replace greedy movement with BFS or A\* when an obstacle blocks direct progress.
+1. Use BFS or A\* for ordinary chasing too, when an obstacle blocks direct progress.
 2. Add occupancy checks so enemies do not select the same cell.
-3. Use `VisionRange` and line-of-sight rather than always targeting the supplied player position.
+3. Give enemies a facing direction, so a rear hit can be judged from the enemy's side rather than the player's heading.
 4. Make the debug board dimensions and encoding data-driven instead of hard-coded to 8x8 and values `0` through `3`.
 5. Expose the current behavior phase and selected direction in the test UI.
-6. Add deterministic seeds and automated tests for each behavior around walls, map edges, and attack thresholds.

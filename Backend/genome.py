@@ -1,10 +1,13 @@
 """
-Genome representation for the human-coupled MCC backend.
+Genome representation for the adaptive enemy-encounter backend.
 
-A genome is a flat dict of dungeon-generation + encounter parameters, matching
-the wire format the Godot client (GenomeData in Scripts/Data/DungeonData.cs)
-deserializes. Keep the two in sync when adding fields. See
-docs/EVOLUTIONARY_DESIGN.md for the design rationale.
+A genome describes one enemy encounter: enemy density, a difficulty scale
+applied to enemy hit points and attack, and the mix of four behaviour
+archetypes. Only these genes evolve. Every genome's params also carry the
+fixed environment (map size, room attempts, resource densities, map seed)
+from config.FIXED_ENVIRONMENT, because that is the wire format the Godot
+client (GenomeParams in Scripts/Data/DungeonData.cs) deserializes — keep the
+two in sync when adding fields. See docs/EVOLUTIONARY_DESIGN.md.
 """
 
 from __future__ import annotations
@@ -13,18 +16,10 @@ import random
 import uuid
 from typing import Any
 
-from config import BEHAVIOR_TYPES, GENOME_BOUNDS, MUTATION_RATE, MUTATION_SIGMA_FRACTION
+from config import BEHAVIOR_TYPES, FIXED_ENVIRONMENT, GENOME_BOUNDS, MUTATION_RATE, MUTATION_SIGMA_FRACTION
 
-# Matches the game's original hardcoded GameManager.cs defaults exactly, so a
-# fresh session (empty Hall of Fame) starts from "the game as it already
-# behaved" rather than an arbitrary random point.
-DEFAULT_GENOME_PARAMS: dict[str, Any] = {
-    "map_width": 160,
-    "map_height": 160,
-    "room_attempts": 280,
-    "trap_density": 0.25,
-    "chest_density": 0.25,
-    "heal_density": 0.25,
+# The encounter the original game shipped with, in the fixed environment.
+DEFAULT_ENEMY_GENES: dict[str, Any] = {
     "enemy_density": 0.25,
     "enemy_behavior_mix": {
         "melee_chaser": 0.34,
@@ -34,6 +29,14 @@ DEFAULT_GENOME_PARAMS: dict[str, Any] = {
     },
     "enemy_difficulty_scale": 1.0,
 }
+DEFAULT_GENOME_PARAMS: dict[str, Any] = {**FIXED_ENVIRONMENT, **DEFAULT_ENEMY_GENES}
+
+
+def with_fixed_environment(params: dict[str, Any]) -> dict[str, Any]:
+    """Returns params with every environment field reset to the fixed values,
+    so no genome — mutated, LLM-proposed or loaded from disk — can carry a
+    different map."""
+    return {**params, **FIXED_ENVIRONMENT}
 
 
 def new_genome_id() -> str:
@@ -45,17 +48,17 @@ def make_default_genome() -> dict[str, Any]:
         "id": new_genome_id(),
         "parent_id": None,
         "generation": 0,
-        "params": dict(DEFAULT_GENOME_PARAMS),
+        "params": {**FIXED_ENVIRONMENT, **DEFAULT_ENEMY_GENES,
+                   "enemy_behavior_mix": dict(DEFAULT_ENEMY_GENES["enemy_behavior_mix"])},
     }
 
 
 def make_random_genome() -> dict[str, Any]:
-    params = {}
+    """Enemy genes drawn uniformly within their bounds; the mix from four
+    uniform weights, normalized."""
+    params: dict[str, Any] = dict(FIXED_ENVIRONMENT)
     for key, (lo, hi) in GENOME_BOUNDS.items():
-        if isinstance(lo, int) and isinstance(hi, int):
-            params[key] = random.randint(lo, hi)
-        else:
-            params[key] = random.uniform(lo, hi)
+        params[key] = random.uniform(lo, hi)
 
     params["enemy_behavior_mix"] = _random_behavior_mix()
 
@@ -78,10 +81,11 @@ def _clamp(value: float, lo: float, hi: float) -> float:
 
 
 def mutate(parent: dict[str, Any]) -> dict[str, Any]:
-    """Gaussian mutation with per-field clamping. No crossover — MCC (Brant &
-    Stanley 2017) mutates a single parent per offspring, by design."""
+    """Gaussian mutation of the enemy genes with per-field clamping. No
+    crossover: as in minimal criterion search (Brant & Stanley 2017), each
+    offspring comes from a single parent. The environment is never mutated."""
     parent_params = parent["params"]
-    child_params = dict(parent_params)
+    child_params = with_fixed_environment(parent_params)
 
     for key, (lo, hi) in GENOME_BOUNDS.items():
         if random.random() > MUTATION_RATE:
@@ -90,12 +94,7 @@ def mutate(parent: dict[str, Any]) -> dict[str, Any]:
         span = hi - lo
         sigma = span * MUTATION_SIGMA_FRACTION
         mutated = parent_params[key] + random.gauss(0, sigma)
-        mutated = _clamp(mutated, lo, hi)
-
-        if isinstance(lo, int) and isinstance(hi, int):
-            mutated = int(round(mutated))
-
-        child_params[key] = mutated
+        child_params[key] = _clamp(mutated, lo, hi)
 
     if random.random() <= MUTATION_RATE:
         mix = dict(parent_params["enemy_behavior_mix"])
@@ -122,7 +121,8 @@ def sanitize_params(candidate_params: Any, fallback_params: dict[str, Any]) -> d
     if not isinstance(candidate_params, dict):
         candidate_params = {}
 
-    sanitized: dict[str, Any] = {}
+    # Environment fields are never taken from the candidate.
+    sanitized: dict[str, Any] = dict(FIXED_ENVIRONMENT)
 
     for key, (lo, hi) in GENOME_BOUNDS.items():
         value = candidate_params.get(key, fallback_params[key])
@@ -131,10 +131,7 @@ def sanitize_params(candidate_params: Any, fallback_params: dict[str, Any]) -> d
         except (TypeError, ValueError):
             value = fallback_params[key]
 
-        value = _clamp(value, lo, hi)
-        if isinstance(lo, int) and isinstance(hi, int):
-            value = int(round(value))
-        sanitized[key] = value
+        sanitized[key] = _clamp(value, lo, hi)
 
     mix_in = candidate_params.get("enemy_behavior_mix")
     if not isinstance(mix_in, dict):

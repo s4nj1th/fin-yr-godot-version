@@ -50,6 +50,12 @@ def _extract_json_object(text: str) -> Optional[dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _enemy_genes(params: dict[str, Any]) -> dict[str, Any]:
+    """Only the evolved genes; the fixed environment is not the LLM's to change."""
+    keys = list(config.GENOME_BOUNDS.keys()) + ["enemy_behavior_mix"]
+    return {key: params[key] for key in keys if key in params}
+
+
 def _build_prompt(parent_params: dict[str, Any], recent_outcomes: list[dict[str, Any]]) -> str:
     bounds_desc = "\n".join(f"  - {key}: between {lo} and {hi}" for key, (lo, hi) in config.GENOME_BOUNDS.items())
     behavior_desc = ", ".join(config.BEHAVIOR_TYPES)
@@ -59,17 +65,17 @@ def _build_prompt(parent_params: dict[str, Any], recent_outcomes: list[dict[str,
         history_lines = []
         for outcome in history:
             status = "PASSED" if outcome["passed"] else f"FAILED ({outcome.get('fail_reason', 'unknown')})"
-            history_lines.append(f"  - {status}: {json.dumps(outcome['params'])}")
+            history_lines.append(f"  - {status}: {json.dumps(_enemy_genes(outcome['params']))}")
         history_desc = "\n".join(history_lines)
     else:
         history_desc = "  (no prior real playthroughs yet)"
 
     param_keys = ", ".join(config.GENOME_BOUNDS.keys())
 
-    return f"""You are proposing one mutated genome for a procedural dungeon-crawler game, as part of an evolutionary algorithm. A genome controls dungeon generation and enemy-encounter parameters. A real human player will actually play whatever genome you propose next, so make a genuinely targeted change based on the outcome history below — not a random guess.
+    return f"""You are proposing one mutated genome for a procedural dungeon-crawler game, as part of an evolutionary algorithm. A genome describes the enemy encounter in a fixed dungeon: how many enemies there are (enemy_density), how strong they are (enemy_difficulty_scale scales their hit points and attack), and the mix of four enemy behaviours. The dungeon itself never changes. A real human player will actually play whatever genome you propose next, so make a genuinely targeted change based on the outcome history below — not a random guess.
 
 Current (parent) genome parameters:
-{json.dumps(parent_params, indent=2)}
+{json.dumps(_enemy_genes(parent_params), indent=2)}
 
 Parameter bounds (stay within these):
 {bounds_desc}
@@ -79,7 +85,7 @@ enemy_behavior_mix keys must be exactly: {behavior_desc} (relative weights, need
 Recent real playthrough outcomes (most recent last):
 {history_desc}
 
-Based on this history, propose ONE mutated genome that differs meaningfully from the parent in at least one parameter, in whatever direction you think is more likely to produce an interesting, passable-but-not-trivial dungeon for this specific player. Respond with ONLY a single JSON object (no prose, no markdown fences) with exactly these keys: {param_keys}, enemy_behavior_mix."""
+Based on this history, propose ONE mutated genome that differs meaningfully from the parent in at least one parameter, in whatever direction you think is more likely to produce an interesting, passable-but-not-trivial encounter for this specific player. Respond with ONLY a single JSON object (no prose, no markdown fences) with exactly these keys: {param_keys}, enemy_behavior_mix."""
 
 
 def _call_anthropic(prompt: str) -> str:
@@ -154,7 +160,7 @@ def _call_local(prompt: str) -> str:
 def propose_mutation(parent: dict[str, Any], recent_outcomes: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """Returns a full sanitized genome dict (same shape as genome_lib.mutate's
     output, tagged mutation_source="llm") on success, or None on any failure —
-    the caller (MCCManager) is responsible for falling back to
+    the caller (AdaptiveEvolutionManager) is responsible for falling back to
     genome_lib.mutate(parent) and counting the failure for the ablation."""
     if not is_available():
         return None
@@ -168,7 +174,7 @@ def propose_mutation(parent: dict[str, Any], recent_outcomes: list[dict[str, Any
             raw_text = _call_local(prompt)
         else:
             raw_text = _call_anthropic(prompt)
-    except Exception as exc:  # noqa: BLE001 - an untrusted external API call must never crash the coevolution loop
+    except Exception as exc:  # noqa: BLE001 - an untrusted external API call must never crash the evolution loop
         print(f"[llm_mutation] LLM call failed, falling back to random mutation: {exc}")
         return None
 

@@ -1,10 +1,15 @@
+> **Historical note.** This is a dated hand-off note from Phase 2's first half. It describes the first
+> version of the backend — one shared archive, the map evolved together with the enemies, "MCC" naming —
+> which was revised after the Phase 2 panel review. For the current design see
+> [EVOLUTIONARY_DESIGN.md](../EVOLUTIONARY_DESIGN.md) and the project [README](../../README.md).
+
 # Project State and Novelty — 2026-09-07
 
 This document answers three questions as of `master` @ `8f83742`: what changed
 in the last merge, what the project currently does end-to-end, and what is
 actually novel about it (for writeup/thesis framing). It supplements, not
-replaces, the deeper per-system docs: [EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md),
-[ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md), [ENEMY_AI.md](ENEMY_AI.md).
+replaces, the deeper per-system docs: [EVOLUTIONARY_DESIGN.md](../EVOLUTIONARY_DESIGN.md),
+[ENEMY_AI_ADAPTATION_PLAN.md](../ENEMY_AI_ADAPTATION_PLAN.md), [ENEMY_AI.md](../ENEMY_AI.md).
 
 ## 1. What just changed — merging two branches of the same project
 

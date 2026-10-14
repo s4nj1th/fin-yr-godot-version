@@ -37,11 +37,15 @@ class ReportOutcomeRequest(BaseModel):
     # "human" (default, and every trial ever reported before this field
     # existed) or "bot" — the optional scripted evaluator described in
     # docs/EVOLUTIONARY_DESIGN.md "Scripted bot evaluator". Bot trials go
-    # through the exact same minimal-criterion/Hall-of-Fame/surrogate path
-    # as human ones; this is purely a label so they stay filterable
-    # (MCCManager.stats, behavior_analytics.py) rather than silently
-    # blending into "human" counts.
+    # through the exact same minimal-criterion/archive/surrogate path as
+    # human ones; this is purely a label so they stay filterable
+    # (AdaptiveEvolutionManager.stats, behavior_analytics.py) rather than
+    # silently blending into "human" counts.
     evaluator_type: Literal["human", "bot"] = "human"
+    # Whose archive this trial belongs to. Optional so older clients keep
+    # working; when omitted, the player_id query parameter (or the default
+    # player) is used.
+    player_id: Optional[str] = None
 
 
 class GenomeParams(BaseModel):
@@ -54,6 +58,8 @@ class GenomeParams(BaseModel):
     enemy_density: float
     enemy_behavior_mix: dict[str, float]
     enemy_difficulty_scale: float
+    # Fixed dungeon layout seed (0 = a new random layout every trial).
+    map_seed: int = 0
 
 
 class Genome(BaseModel):
@@ -66,6 +72,8 @@ class Genome(BaseModel):
 class SurrogateEstimate(BaseModel):
     prob: float
     std: float
+    # The part of std due to lack of data (std also includes outcome noise).
+    epistemic_std: Optional[float] = None
 
 
 class NextCandidateResponse(BaseModel):
@@ -80,3 +88,4 @@ class ReportOutcomeResponse(BaseModel):
     passed: bool
     hall_of_fame_size: int
     fail_reason: Optional[str] = None
+    player_id: str = "default"

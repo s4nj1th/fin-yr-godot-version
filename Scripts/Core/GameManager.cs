@@ -159,6 +159,13 @@ public partial class GameManager : Node3D
 	[Export] public int AutoplayMaxTrials { get; set; }
 	private int _autoplayTrialsCompleted;
 
+	// Whose archive the backend evolves designs for: each player gets their
+	// own archive and surrogate (Backend/adaptive_evolution.py). Set here, or
+	// with `--player=NAME` on the command line. Left empty, human play uses
+	// "default" and the bot uses "bot", so bot trials never train a human
+	// player's surrogate.
+	[Export] public string PlayerId { get; set; } = "";
+
 	// --- Adaptive enemy AI (docs/ENEMY_AI_ADAPTATION_PLAN.md) ---
 	// Unlike the _trial* counters above (which reset every regeneration and
 	// feed the evolutionary-loop backend), these persist for the whole play
@@ -220,7 +227,17 @@ public partial class GameManager : Node3D
 			{
 				AutoplayTimeScale = timeScale;
 			}
+			else if (arg.StartsWith("--player=", StringComparison.Ordinal))
+			{
+				PlayerId = arg.Substring("--player=".Length);
+			}
 		}
+
+		if (string.IsNullOrWhiteSpace(PlayerId))
+		{
+			PlayerId = AutoplayEnabled ? "bot" : "default";
+		}
+		GD.Print($"[Evolution] Playing as player '{PlayerId}'.");
 
 		if (AutoplayEnabled)
 		{
@@ -278,7 +295,7 @@ public partial class GameManager : Node3D
 		if (_trialElapsedSeconds > MaxTrialSeconds && !_trialReported)
 		{
 			// A passive timeout is a distinct signal from a manual quit — see
-			// docs/EVOLUTIONARY_DESIGN.md and mcc.py's _evaluate_minimal_criterion.
+			// docs/EVOLUTIONARY_DESIGN.md and adaptive_evolution.py's _evaluate_minimal_criterion.
 			EndTrialAndAdvanceAsync(exitReached: false, quitEarly: false);
 			return;
 		}
@@ -387,7 +404,7 @@ public partial class GameManager : Node3D
 
 	private async Task RequestNextGenomeAsync()
 	{
-		NextCandidateResponse? response = await _apiClient.RequestNextGenomeAsync();
+		NextCandidateResponse? response = await _apiClient.RequestNextGenomeAsync(PlayerId);
 		if (response != null)
 		{
 			_currentGenome = response.Genome;
@@ -465,7 +482,8 @@ public partial class GameManager : Node3D
 				{
 					GenomeId = _currentGenomeId,
 					Telemetry = telemetry,
-					EvaluatorType = AutoplayEnabled ? "bot" : "human"
+					EvaluatorType = AutoplayEnabled ? "bot" : "human",
+					PlayerId = PlayerId
 				});
 
 				LastTrialResultMessage = result != null
@@ -561,7 +579,11 @@ public partial class GameManager : Node3D
 		_discoveryImage.Fill(new Color(0, 0, 0, 1));
 		_discoveryTexture = ImageTexture.CreateFromImage(_discoveryImage);
 
-		ulong seed = (ulong)Time.GetTicksUsec() + _generationCounter;
+		// Only the enemies evolve; the dungeon is fixed. A non-zero map_seed
+		// rebuilds the same layout every trial, so a change in outcome can be
+		// attributed to the encounter rather than to a different map.
+		long mapSeed = _currentGenome.Params.MapSeed;
+		ulong seed = mapSeed != 0 ? (ulong)mapSeed : (ulong)Time.GetTicksUsec() + _generationCounter;
 		_generationCounter++;
 		_rng.Seed = seed;
 
@@ -631,6 +653,11 @@ public partial class GameManager : Node3D
 		UpdateTileVisibility();
 
 		_trialTotalChests = CountTilesOfType(6);
+
+		GenomeParams p = _currentGenome.Params;
+		GD.Print($"[Dungeon] seed={seed} rooms={_rooms.Count} enemies={_enemies.Count} traps={CountTilesOfType(4)} " +
+			$"chests={_trialTotalChests} heals={CountTilesOfType(9)} | design enemy_density={p.EnemyDensity:F3} " +
+			$"difficulty_scale={p.EnemyDifficultyScale:F3}");
 	}
 
 	private void GenerateDungeon()

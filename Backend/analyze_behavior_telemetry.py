@@ -345,6 +345,8 @@ def main() -> None:
     parser.add_argument("--log", default=config.SESSION_LOG_FILE, help="Path to session_log.jsonl")
     parser.add_argument("--output-dir", default=os.path.join(os.path.dirname(__file__), "reports"),
                          help="Directory to write PNG charts into")
+    parser.add_argument("--player", default="all",
+                        help="Only this player's trials (default: all players)")
     parser.add_argument("--evaluator", choices=["all", "human", "bot"], default="all",
                          help="Restrict to trials from one evaluator (see docs/EVOLUTIONARY_DESIGN.md "
                               "'Scripted bot evaluator'). Default 'all' mixes human and bot trials — "
@@ -358,6 +360,7 @@ def main() -> None:
           f"({counts['human']} human, {counts['bot']} bot)")
 
     events = ba.filter_by_evaluator_type(events, args.evaluator)
+    events = ba.filter_by_player(events, args.player)
     suffix = "" if args.evaluator == "all" else args.evaluator
     if suffix:
         print(f"Filtered to evaluator_type={args.evaluator}: {len(events)} trial(s)")

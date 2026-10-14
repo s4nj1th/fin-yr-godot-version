@@ -1,8 +1,13 @@
+> **Historical note.** This is a dated hand-off note from Phase 2's first half. It describes the first
+> version of the backend — one shared archive, the map evolved together with the enemies, "MCC" naming —
+> which was revised after the Phase 2 panel review. For the current design see
+> [EVOLUTIONARY_DESIGN.md](../EVOLUTIONARY_DESIGN.md) and the project [README](../../README.md).
+
 # Handoff: Per-Archetype Telemetry + Scripted Bot Evaluator
 
 Written 2026-09-08 for whoever (human or AI) picks this up next. This
-supplements, not replaces, [BEHAVIOR_ANALYTICS.md](BEHAVIOR_ANALYTICS.md)
-and [EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md) — read those for the
+supplements, not replaces, [BEHAVIOR_ANALYTICS.md](../BEHAVIOR_ANALYTICS.md)
+and [EVOLUTIONARY_DESIGN.md](../EVOLUTIONARY_DESIGN.md) — read those for the
 design rationale. This file is the "what state is the code actually in,
 what's broken, what's still uncommitted" status snapshot.
 

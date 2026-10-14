@@ -69,11 +69,12 @@ public partial class ApiClient : Node
 
 	// --- Evolutionary-loop backend (Backend/main.py) ---
 
-	public async Task<NextCandidateResponse?> RequestNextGenomeAsync()
+	public async Task<NextCandidateResponse?> RequestNextGenomeAsync(string playerId)
 	{
 		try
 		{
-			HttpResponseMessage response = await _client.PostAsync($"{BaseUrl}/api/next_candidate", null);
+			string url = $"{BaseUrl}/api/next_candidate?player_id={Uri.EscapeDataString(playerId)}";
+			HttpResponseMessage response = await _client.PostAsync(url, null);
 			response.EnsureSuccessStatusCode();
 
 			string responseBody = await response.Content.ReadAsStringAsync();

@@ -114,3 +114,17 @@ Backend/data/
 Backend/reports/
 Backend/.pytest_cache/
 *.pyc
+# ==========================================
+# Phase 2 review materials (paper, deck) are kept locally, not in the repo
+# ==========================================
+Review_2/
+*.aux
+*.bbl
+*.blg
+*.out
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+*.nav
+*.snm
+*.toc

@@ -1,177 +1,211 @@
-# Evolutionary Design — Human-Coupled Minimal Criterion Coevolution
+# Evolutionary Design — Adaptive Enemy Encounters
 
-This document is the in-repo source of truth for the evolutionary system under
-`Backend/`. Earlier drafts of this code cited an external, untracked planning
-document (`Idea/Idea.md`, gitignored, never committed); those citations have
-been replaced with references to this file so the rationale actually resolves
-for anyone who clones the repo.
+This document is the in-repo source of truth for the evolution system under
+`Backend/`. The quantitative claims below come from the simulation study in
+the project's research paper (kept with the Phase 2 review materials).
 
-## What evolves
+## In one paragraph
 
-A **genome** (`Backend/genome.py`) is a flat dict of dungeon-generation and
-encounter parameters — map size, room-attempt count, trap/chest/heal/enemy
-tile density, an `enemy_behavior_mix` distribution over the four enemy AI
-archetypes (`melee_chaser`, `melee_hit_run`, `ranged_kite`, `ranged_strafe`),
-and an `enemy_difficulty_scale` multiplier on enemy HP/attack. The Godot
-client's existing procedural room-and-corridor generator
-(`Scripts/Core/GameManager.cs`) is the **phenotype decoder**: it consumes a
-genome's params directly instead of the old hardcoded constants.
+The game adapts its **enemy encounters** to each player. A player-in-the-loop
+evolutionary search proposes encounter designs; the player plays each one on
+a **fixed dungeon**; a design is kept if and only if the player clears it (a
+*minimal criterion*); new designs are mutated from kept ones. An online
+Gaussian-process **surrogate** learns which designs this player can clear and
+decides the confident cases itself, so the player's time is spent only where
+the model is unsure. Within a session, a separate rule-based director adapts
+enemy *tactics* to the player's habits ([ENEMY_AI.md](ENEMY_AI.md)).
 
-**Honest limitation, stated plainly**: this is parameter evolution over a
-fixed generator, not structural/topological evolution of level layouts (a
-room-graph genome with evolvable connectivity would be a stronger claim, and
-is a natural next step — not yet built). Say this precisely in the thesis
-rather than overclaiming "evolves levels."
+## Terminology (Phase 2 panel review)
 
-## Algorithm: Minimal Criterion Coevolution (MCC)
+The panel noted that **"coevolution" is the wrong word** for this project and
+suggested describing it as adaptive learning. We agree, and the code, docs
+and paper no longer use it:
 
-Following Brant & Stanley (2017), *"Minimal Criterion Coevolution: A New
-Approach to Open-Ended Search"*. Rather than a fixed-size population with
-tournament selection, `Backend/mcc.py`'s `MCCManager` maintains an
-ever-growing **Hall of Fame** (archive) of genomes that have passed a minimal
-pass/fail criterion:
+- In *minimal criterion coevolution* (Brant & Stanley 2017) two populations
+  evolve — e.g. mazes and maze-solving agents — and each sets the criterion
+  the other must meet. Here only the encounter designs evolve. The player
+  adapts, but is not a population under selection.
+- We therefore call the method **adaptive enemy evolution by minimal
+  criterion search**: an evolutionary search whose only selection pressure is
+  a pass/fail criterion, judged by the player. The project as a whole —
+  search plus surrogate plus tactical director — is an **adaptive learning**
+  system: it learns what each player can handle and adapts the enemies to it.
+- The archive is still called the "hall of fame" in code and API field names
+  (`hall_of_fame_size`) for backward compatibility; it is a plain archive.
 
-1. **Propose**: pick a uniformly random parent from the Hall of Fame (or a
-   seeded default genome if it's empty), mutate it.
-2. **Evaluate**: hand the candidate to the live player as the next dungeon.
-   When the trial ends, its telemetry is checked against the minimal
-   criterion (`_evaluate_minimal_criterion`): reached the exit, wasn't
-   manually quit, wasn't trivially fast or abandoned-slow, didn't rack up too
-   many deaths.
-3. **Accept/reject**: a pass appends the genome to the Hall of Fame; a fail
-   discards it. There is no death/replacement of existing members and no
-   crossover — MCC mutates a single parent per offspring by design (Brant &
-   Stanley 2017), not as a missing feature.
+## What evolves — and what does not (Phase 2 panel review)
 
-This is deliberately **not** a textbook population GA: the "population" is a
-monotonically growing archive, and the "second coevolving species" MCC
-normally pairs content against (Brant & Stanley's original paper coevolves
-mazes against maze-solving agents) is replaced here by a live human player.
-Describe it in exactly these terms in the writeup — as human-coupled MCC, not
-as generic coevolution.
+The panel also noted that **evolving the enemies and the map together
+defeats the purpose of evolution**, because the environment keeps changing
+under the search. We agree: if the map changes, a failed trial cannot be
+attributed to the enemies. So only the enemies evolve.
 
-## Mutation
+A **genome** (`Backend/genome.py`) has three evolved genes:
 
-Per-field Gaussian perturbation (`genome.mutate`), probability
-`MUTATION_RATE` per field, clamped to `GENOME_BOUNDS`, plus a probabilistic
-nudge-and-renormalize of one `enemy_behavior_mix` weight.
+| Gene | Range | Effect in the game |
+|---|---|---|
+| `enemy_density` | 0 – 0.5 | share of rooms that receive an enemy |
+| `enemy_difficulty_scale` | 0.6 – 1.6 | multiplier on every enemy's HP and attack |
+| `enemy_behavior_mix` | weights summing to 1 | how often each archetype spawns (`melee_chaser`, `melee_hit_run`, `ranged_kite`, `ranged_strafe`) |
 
-## Surrogate-gated evaluation (reduces real-playthrough cost)
+Everything else is **fixed** (`config.FIXED_ENVIRONMENT`) and sent unchanged
+with every genome, so the client builds the same dungeon every trial:
 
-A real playthrough costs the player several minutes; illuminating a useful
-archive needs many evaluations. `Backend/surrogate.py` fits a
-`GaussianProcessRegressor` (RBF + White kernel) on real pass/fail outcomes
-once at least `SURROGATE_MIN_LABELS` exist, and predicts `(prob, std)` for
-new candidates. If the surrogate is confident (`prob` far from 0.5, low
-`std`), the candidate is auto-accepted/rejected for free; only genuinely
-uncertain candidates are spent on the player (`MCCManager._needs_real_evaluation`,
-`_auto_decide`). Only real, human-verified outcomes are ever used to retrain
-the surrogate — auto-decided outcomes are never fed back in, so calibration
-error can't compound against itself.
+- **Map**: 160×160 tiles, 280 room attempts, and **`map_seed = 123`**, which
+  fixes the layout itself (116 rooms). The client seeds its generator with it
+  (`GameManager.RegenerateDungeon`) and logs `[Dungeon] seed=… rooms=…` on
+  every trial, so the fixed layout can be checked in the game log.
+- **Resources**: trap, chest and heal densities of 0.15 each. The client rolls
+  each room against cumulative thresholds (trap, chest, heal, enemy), so the
+  enemy share is capped at 1 − 0.45 = 0.55, above `enemy_density`'s upper
+  bound — every density value is expressed. (With the old defaults of 0.25
+  each, every density above 0.25 produced the same dungeon.)
+- **Why seed 123**: the seed was chosen by playing the bot through candidate
+  seeds ([INTEGRATION_TESTING.md](INTEGRATION_TESTING.md)). On seed 123 the
+  start-to-exit route passes enough rooms that damage taken grows with
+  encounter difficulty, and even an easy crossing takes longer than the 15 s
+  minimum. On some seeds the exit is so close that every design fails as
+  "too fast"; on others the enemies are never met.
 
-**Honest limitation**: a proper Gaussian Process *classifier* would give
-calibrated probabilities for binary labels; `GaussianProcessRegressor` fit
-directly on `{0,1}` labels is a pragmatic proxy that also happens to expose
-per-point variance, which the classifier doesn't. This is a documented
-simplification, not an oversight — see `surrogate.py`'s module docstring.
+Mutation, random generation and LLM output all go through code that resets
+the environment fields (`genome.with_fixed_environment`,
+`genome.sanitize_params`), so no design can carry a different map.
+
+## The search loop
+
+`Backend/adaptive_evolution.py`, `AdaptiveEvolutionManager`:
+
+1. **Propose.** Pick a uniformly random parent from the player's archive and
+   mutate it (single parent, no crossover — as in minimal criterion search).
+   While the archive is still empty there is no parent: a **random design**
+   is served instead, until one passes (`BOOTSTRAP_STRATEGY=random`).
+2. **Gate.** If the surrogate is ready, predict the pass probability `p` and
+   its uncertainty. The candidate is **played** if `0.4 < p < 0.6` or its
+   **epistemic** uncertainty exceeds 0.25; otherwise it is **auto-decided**
+   (accepted if `p ≥ 0.5`) and the next candidate is proposed. After 25
+   auto-decisions in a row a candidate is played anyway.
+3. **Play.** The player plays the candidate; its telemetry is checked against
+   the minimal criterion.
+4. **Accept / reject.** A pass appends the design to the archive; a fail
+   discards it. Nothing is ever removed or ranked.
+5. **Learn.** The played outcome — and only played outcomes — is added to the
+   surrogate's training data and the surrogate is refitted.
+
+### Minimal criterion
+
+A trial passes if and only if, checked in this order: the player did not
+quit; reached the exit; took at least 15 s; and died at most 3 times
+(`config.py`). Each failure reason is logged separately
+(`quit_early`, `too_slow_abandoned`, `did_not_reach_exit`,
+`too_fast_trivial`, `too_many_deaths`).
+
+### Mutation
+
+Each scalar enemy gene is perturbed with probability 0.6 by Gaussian noise
+with standard deviation 15% of its range, then clamped; with probability 0.6
+one behaviour-mix weight is perturbed by N(0, 0.2²), clipped at zero, and the
+mix renormalized.
+
+## Surrogate and the uncertainty gate
+
+`Backend/surrogate.py` fits a Gaussian-process regressor (constant × RBF +
+white-noise kernel, scikit-learn) to the player's played pass/fail outcomes,
+once there are at least 5 labels of both classes.
+
+**Why the gate uses epistemic uncertainty.** The GP's predictive variance is
+exactly the sum of two parts: *epistemic* variance (what more data would
+remove) and the fitted *noise* (how random pass/fail is for a design near the
+player's limit). The original version gated on the total. That fails in
+practice: the gate sends the hardest-to-predict designs to the player, those
+outcomes are the noisiest, the fitted noise grows, and once its square root
+passes the 0.25 threshold the total-uncertainty gate can never auto-decide
+again. In the simulation study (50 runs per condition) this happened in 94%
+of the intermediate player's runs; with the original settings the surrogate
+decided only 15 designs in 100 playthroughs. Gating on the epistemic part
+(`SURROGATE_GATE_UNCERTAINTY=epistemic`, the default) gave an eight-fold
+larger archive for the same playthroughs, with archive contamination not
+significantly different from playing everything. `total` remains available for
+comparison.
+
+**The trade-off to know about.** Because the gate plays exactly the designs
+the surrogate cannot predict, those designs sit near the player's limit: in
+the simulation the intermediate player failed 34% of played designs, against
+12% when every design is played. This is the price of learning fast.
+
+**Honest limitation**: a GP *classifier* would give better-calibrated
+probabilities for binary labels; the regressor on {0, 1} labels is a
+pragmatic proxy that exposes a per-point variance the gate needs.
+
+## Players
+
+Each player has their own manager — archive, surrogate, counters — saved in
+`Backend/data/players/<player_id>.json`. The client sends its player id
+(`GameManager.PlayerId`, or `--player=NAME`); every endpoint takes a
+`player_id` query parameter (default `default`). Designs evolved for one
+player do not suit another (in the simulation, designs evolved for an expert
+were failed 56% of the time by a novice), so separate archives are what
+makes the adaptation personal.
+
+The scripted bot plays as player `bot` by default, so **bot trials never
+train a human player's surrogate**. Trials still carry
+`evaluator_type = human | bot`, counted separately in `/api/stats`.
+
+`data/mcc_state.json`, the single archive of the first version, is not
+loaded: its designs were judged on maps that changed between trials, so
+their outcomes do not carry over to the fixed environment.
+
+## Non-stationary players (optional)
+
+An archive never forgets, so if a player's skill drops, designs that were
+clearable stay in it. `SURROGATE_WINDOW=N` fits the surrogate on the last N
+outcomes only, and `FILTER_PARENTS_BY_SURROGATE=1` then draws parents only
+from archived designs it still predicts the player can clear. In the
+simulation (window 30) this lowered the played failure rate after a skill
+drop from 68% to 44%, but did not clean the archive. Both are off by default.
 
 ## LLM-guided mutation — optional, off by default, not load-bearing
 
-`Backend/llm_mutation.py` can replace random Gaussian mutation with an LLM
-call (Anthropic / OpenAI / local Ollama) that proposes a targeted mutation
-based on recent pass/fail history. This exists as an **optional, ablatable
-arm**, not part of the core evolutionary claim:
+`Backend/llm_mutation.py` can replace Gaussian mutation with a language-model
+call (Anthropic, OpenAI or a local Ollama model) that sees the parent's
+enemy genes, their bounds and the last 10 played outcomes, and returns one
+mutated design as JSON.
 
-- Controlled by `LLM_MUTATION_MODE` (`auto` / `on` / `off`) — `off` is the
-  ablation control, and `auto` (the default) only activates if a key is
-  actually configured. **A fresh checkout with no `.env` file runs Phase 1+2
-  only — zero LLM calls, ever.**
-- Every LLM output is untrusted and passed through `genome.sanitize_params`
-  before use — a malformed or adversarial response can't produce an
-  out-of-bounds genome or crash the server.
-- Any failure (disabled, no key, network error, bad JSON) falls back
-  transparently to `genome.mutate(parent)`; `MCCManager` counts
-  `llm_mutations_used` vs `random_mutations_used` vs `llm_mutation_failures`
-  so "LLM-guided vs. random mutation" stays a measurable comparison in
-  `/api/stats`, not an assumed improvement.
+- `LLM_MUTATION_MODE` = `auto` (use it only if configured) / `on` / `off`.
+  A fresh checkout with no `.env` never calls an LLM.
+- The reply is untrusted: parsed defensively, clamped to bounds, environment
+  fields ignored, mix renormalized; any failure falls back to Gaussian
+  mutation. Uses and failures are counted in `/api/stats`.
+- **Measured effect**: in a 5-seed pilot with a local 4-billion-parameter
+  model, LLM offspring passed 83% of the time against 90% for Gaussian
+  mutation — no detectable difference. (Before the review, with a prompt that
+  also exposed the map genes, it did significantly worse: 58% against 80%.)
+  It stays an ablation arm.
 
-This keeps the project's "no LLM in the core system" requirement true by
-construction: the archive, the minimal criterion, the surrogate, and the
-default mutation operator are all LLM-free, and the LLM path is a strictly
-optional, independently-toggleable extra that the core loop never depends on.
+## Scripted bot evaluator
 
-## Scripted bot evaluator — optional, off by default, feeds the real loop
+`Scripts/AI/BotPlayerPolicy.cs` can drive the player instead of the keyboard
+(`--autoplay`), through the same game code and the same API calls as a human.
+`AutoplayTimeScale` speeds up the game clock; `AutoplayMaxTrials` makes the
+process quit after N trials.
 
-A real playthrough costs the player several minutes, and archive growth is
-bottlenecked on how much a human can play. `Scripts/AI/BotPlayerPolicy.cs`
-is an optional autoplay input source — set `GameManager.AutoplayEnabled`
-(Inspector export or a `--autoplay` CLI flag on the running build) and the
-bot drives the player instead of the keyboard, through the exact same
-`GameManager`/`EnemyController` code, `/api/next_candidate` →
-`/api/report_outcome` loop, and minimal criterion a human trial goes
-through. Nothing about MCC's accept/reject logic changes for a bot trial —
-it can grow the real Hall of Fame.
+**Honest limitation**: the bot is deliberately simple — breadth-first search
+straight to the exit, backing away from the nearest enemy below 30% health.
+It knows where the exit is, does not fight on purpose and does not explore,
+so it meets far fewer enemies than a person exploring under fog of war. Its
+results are useful for testing the integration and for volume, not as a
+stand-in for human players.
 
-What makes it different from a human trial is purely a label. Every
-`ReportOutcomeRequest` carries `evaluator_type` (`"human"`, the default a
-real client always used to send implicitly, or `"bot"`), which
-`MCCManager.report_outcome` stores on the accepted candidate and the
-`session_log.jsonl` record, and counts separately in `/api/stats`
-(`human_evaluations` / `bot_evaluations` / `real_evaluations` = their sum).
-This keeps bot-sourced data a measurable, filterable ablation rather than
-something that silently blends into "human" numbers — the same pattern
-already used for LLM-guided mutation above. `behavior_analytics.py`'s
-`filter_by_evaluator_type` and `analyze_behavior_telemetry.py --evaluator
-{human,bot}` (see [BEHAVIOR_ANALYTICS.md](BEHAVIOR_ANALYTICS.md)) let any
-chart be produced for one evaluator in isolation, so bot-vs-human telemetry
-actually can be compared before trusting the bot's volume as a proxy.
+## Telemetry → minimal criterion
 
-`AutoplayTimeScale` (default `4.0`) scales `Engine.TimeScale`, which speeds
-up every delta-driven system uniformly (movement, cooldowns,
-`MAX_TRIAL_SECONDS`) — a bot doesn't need real-time pacing. `AutoplayMaxTrials`
-(default `0` = unbounded) makes the process self-quit after N reported
-trials, for an unattended batch run.
+`GameManager.cs` reports a trial on exactly one of three endings: reaching
+the exit, pressing R (quit), or the 240 s timeout without reaching the exit.
+`_evaluate_minimal_criterion` keeps them apart (`quit_early` vs
+`too_slow_abandoned`).
 
-**Honest limitation, stated plainly**: `BotPlayerPolicy` is deliberately
-simple — BFS straight to the exit (`GridPathfinder`, the same pathfinder
-enemies use), backing away from the nearest threat only once health drops
-below 30%. It does not seek chests, avoid traps, feint, use cover, or
-otherwise resemble skilled or varied human play. It exists to generate
-*volume* of real per-archetype combat telemetry fast, not to be a validated
-stand-in for a human player — that validation (do bot-sourced and
-human-sourced archetype profiles actually agree?) is exactly what the
-human/bot split above makes possible to check, not something claimed here
-by construction.
+## Scope boundaries
 
-## Telemetry → minimal criterion mapping
-
-`Scripts/Core/GameManager.cs` accumulates telemetry for the current trial
-(elapsed time, damage taken, deaths, kills, chests, traps, exploration %) and
-reports it via `ApiClient.ReportOutcomeAsync` on exactly one of three trial
-endings: reaching the exit tile (`exit_reached=true, quit_early=false`),
-pressing R to manually regenerate (`exit_reached=false, quit_early=true`), or
-hitting the `MAX_TRIAL_SECONDS` timeout without finding the exit
-(`exit_reached=false, quit_early=false`) — a passive timeout is not the same
-signal as a deliberate quit, and `_evaluate_minimal_criterion` distinguishes
-them (`quit_early` vs. `too_slow_abandoned`) accordingly.
-
-## Known scope boundaries (for the thesis, not swept under the rug)
-
-- Flat-parameter genome, not a structural/topological one — see above.
-- No behavioral-descriptor archive (MAP-Elites-style quality-diversity) yet;
-  this is a pass/fail archive, not an illuminated grid. A natural extension.
-- A scripted bot evaluator now exists (see above) to scale up archive
-  growth, but it's a deliberately simple exit-rushing heuristic, not a
-  validated proxy for human play — treat bot-sourced telemetry as its own
-  labeled condition (`evaluator_type=bot`) to compare against human data,
-  not as interchangeable with it, until that comparison has actually been
-  run.
-- No automated C# tests (Godot's Node lifecycle makes `GameManager`/
-  `EnemyController` hard to unit-test without a Godot test runner); the
-  Python backend has automated tests (`Backend/tests/`), the C# side does not.
-
-See [BEHAVIOR_ANALYTICS.md](BEHAVIOR_ANALYTICS.md) for a related but
-separate piece: per-archetype combat telemetry and charts built on top of
-`session_log.jsonl`. It answers "how does each enemy AI archetype behave
-and how does that change across generations," not "how good is a genome" —
-it doesn't feed back into the MCC loop itself.
+- Parameter evolution over a fixed generator and a fixed map, by design.
+- A pass/fail archive, not a quality-diversity grid; the criterion bounds
+  difficulty only from above, so archives contain many comfortable designs.
+- All quantitative results so far come from the simulated player; a human
+  study (protocol in the paper, Sec. VI) is the next step.

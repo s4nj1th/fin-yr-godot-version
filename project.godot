@@ -14,9 +14,9 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
-config/name="Evolutionary Dungeon Crawler"
-config/description="A Godot 4 C# dungeon crawler driven by a human-coupled evolutionary loop (Minimal Criterion Coevolution) — see docs/EVOLUTIONARY_DESIGN.md."
-run/main_scene="res://Scenes/MeleeAiTest.tscn"
+config/name="Adaptive Dungeon Crawler"
+config/description="A Godot 4 C# dungeon crawler whose enemy encounters adapt to each player: a player-in-the-loop evolutionary search (minimal criterion selection with an uncertainty-gated surrogate) evolves the enemies on a fixed map — see docs/EVOLUTIONARY_DESIGN.md."
+run/main_scene="res://Main.tscn"
 config/features=PackedStringArray("4.7", "C#")
 
 [autoload]

@@ -24,6 +24,7 @@ public partial class GameHud : CanvasLayer
 	private PanelContainer _pausePanel = null!;
 	private Label _timeLabel = null!;
 	private Label _fpsLabel = null!;
+	private Label _playerLabel = null!;
 	private Label _hpLabel = null!;
 	private ProgressBar _hpBar = null!;
 	private Label _scoreLabel = null!;
@@ -159,7 +160,7 @@ void fragment() {
 
 		var title = new Label
 		{
-			Text = "EVOLUTIONARY DUNGEON CRAWLER",
+			Text = "ADAPTIVE DUNGEON CRAWLER",
 			HorizontalAlignment = HorizontalAlignment.Left
 		};
 		title.AddThemeColorOverride("font_color", TextPrimary);
@@ -210,6 +211,11 @@ void fragment() {
 		_exitLabel.AddThemeFontSizeOverride("font_size", 13);
 		vbox.AddChild(_exitLabel);
 
+		_playerLabel = new Label { Text = "PLAYER --", HorizontalAlignment = HorizontalAlignment.Right };
+		_playerLabel.AddThemeColorOverride("font_color", AccentCyan);
+		_playerLabel.AddThemeFontSizeOverride("font_size", 12);
+		vbox.AddChild(_playerLabel);
+
 		_fpsLabel = new Label { Text = "FPS 0", HorizontalAlignment = HorizontalAlignment.Right };
 		_fpsLabel.AddThemeColorOverride("font_color", TextMuted);
 		_fpsLabel.AddThemeFontSizeOverride("font_size", 12);
@@ -237,6 +243,7 @@ void fragment() {
 			_hpBar.MaxValue = maxHp;
 			_hpBar.Value = currentHp;
 			_scoreLabel.Text = $"SCORE {gameManager.Score}";
+			_playerLabel.Text = $"PLAYER {gameManager.PlayerId.ToUpperInvariant()}";
 			_exitLabel.Text = DescribeExit(gameManager.PlayerGridPosition, gameManager.ExitGridPosition);
 			_hpLabel.Visible = true;
 			_hpBar.Visible = true;

@@ -1,10 +1,11 @@
 """
-Tuning knobs for the human-coupled MCC backend.
+Tuning knobs for the adaptive enemy-encounter evolution backend.
 
-Nothing in this file is load-bearing science — these are starting-point
-constants that need empirical iteration once real playtesting starts.
+Most values here are starting-point constants that need empirical iteration
+once real playtesting starts. The defaults that are not arbitrary (enemy-only
+genome, fixed environment, epistemic gate, random bootstrap) are backed by
+the simulation study in the research paper and explained next to each setting.
 See docs/EVOLUTIONARY_DESIGN.md for the full design rationale.
-Adjust freely; nothing else in the codebase assumes specific values here.
 """
 
 import os
@@ -23,16 +24,37 @@ MIN_TRIAL_SECONDS = 15.0   # faster than this -> trivially easy, fail
 MAX_TRIAL_SECONDS = 240.0  # slower than this without reaching the exit -> abandoned, fail
 MAX_DEATHS_ALLOWED = 3     # more deaths than this in one trial -> fail, even if the exit was reached
 
-# --- Genome parameter bounds (used for random init + mutation clamping) ---
+# --- What evolves: enemy encounters only ---
+# Only the enemies evolve. Evolving the map at the same time would mean the
+# environment keeps changing under the search, so a failed trial could not be
+# attributed to the enemies (panel review, Phase 2). These are the evolved
+# scalar genes; the behaviour mix below is the third, grouped gene.
 GENOME_BOUNDS = {
-    "map_width": (80, 200),
-    "map_height": (80, 200),
-    "room_attempts": (150, 350),
-    "trap_density": (0.0, 0.5),
-    "chest_density": (0.0, 0.5),
-    "heal_density": (0.0, 0.5),
     "enemy_density": (0.0, 0.5),
     "enemy_difficulty_scale": (0.6, 1.6),
+}
+
+# --- What stays fixed: the environment ---
+# Sent with every genome so the client builds the same dungeon every trial.
+# Resource densities sum to 0.45, which leaves room for an enemy share up to
+# 0.55 in the client's cumulative per-room roll (trap, chest, heal, enemy),
+# above the 0.5 bound of enemy_density -- so every value of enemy_density is
+# expressed. (At the old default of 0.25 each, any enemy_density above 0.25
+# produced the same dungeon.) map_seed fixes the layout itself; 0 means "a
+# new random layout every trial". Seed 123 was chosen by playing the bot
+# through candidate seeds (docs/INTEGRATION_TESTING.md): its start-to-exit
+# route passes enough rooms that damage taken grows with encounter
+# difficulty, and even the easiest crossing takes longer than
+# MIN_TRIAL_SECONDS. On some other seeds the route is so short that every
+# design is "too fast", or the enemies are never met at all.
+FIXED_ENVIRONMENT = {
+    "map_width": 160,
+    "map_height": 160,
+    "room_attempts": 280,
+    "trap_density": 0.15,
+    "chest_density": 0.15,
+    "heal_density": 0.15,
+    "map_seed": int(os.getenv("MAP_SEED", "123")),
 }
 
 # Behavior-mix weight keys (kept separate since they're normalized as a group, not clamped individually)
@@ -49,6 +71,30 @@ SURROGATE_MIN_LABELS = 5           # don't trust/use the surrogate until at leas
 SURROGATE_UNCERTAINTY_BAND = (0.4, 0.6)  # predicted prob inside this band -> spend a real playthrough
 SURROGATE_STD_THRESHOLD = 0.25     # predicted std above this -> spend a real playthrough regardless of prob
 SURROGATE_MAX_PROPOSAL_ATTEMPTS = 25  # safety cap so a saturated surrogate can't loop forever without progress
+# Which part of the surrogate's uncertainty the gate compares with
+# SURROGATE_STD_THRESHOLD:
+#   "epistemic" (default) -> uncertainty from lack of data only, which shrinks
+#                            as the player plays
+#   "total"               -> epistemic + fitted outcome noise (the original v1
+#                            behaviour)
+# Pass/fail outcomes near a player's limit are close to coin flips, so the
+# fitted noise grows as the gate does its job; with "total" the gate then
+# stops auto-deciding altogether. See the research paper, Sec. V-A.
+SURROGATE_GATE_UNCERTAINTY = os.getenv("SURROGATE_GATE_UNCERTAINTY", "epistemic").lower()
+# Train the surrogate on only the most recent N real outcomes (0 = all).
+# A small window lets it track a player whose skill changes mid-session.
+SURROGATE_WINDOW = int(os.getenv("SURROGATE_WINDOW", "0"))
+# With a windowed surrogate, also skip archive parents it now predicts the
+# player would fail (only consulted once the surrogate is ready).
+FILTER_PARENTS_BY_SURROGATE = os.getenv("FILTER_PARENTS_BY_SURROGATE", "0") == "1"
+
+# --- Cold start ---
+# What to serve while a player's archive is still empty:
+#   "random" (default) -> a fresh random design each time, until one passes
+#   "default"          -> the fixed default design every time (v1 behaviour)
+# The default design can be far too hard for a weak player, who would then
+# be served the same encounter over and over; see the research paper, Sec. V-C.
+BOOTSTRAP_STRATEGY = os.getenv("BOOTSTRAP_STRATEGY", "random").lower()
 
 # --- Optional LLM-guided mutation (off unless explicitly configured) ---
 # Ablation-critical: LLM_MUTATION_MODE must stay togglable so "LLM-guided vs
@@ -110,6 +156,17 @@ THRESHOLDS = {
     "high_situational_shift_pct": 0.5,
 }
 
-DATA_DIR = os.path.join(_BACKEND_DIR, "data")
-STATE_FILE = os.path.join(DATA_DIR, "mcc_state.json")
+# --- Players ---
+# Each player gets their own archive and surrogate: designs evolved for one
+# player do not suit another (research paper, Sec. V-E), and the scripted bot plays as
+# its own player so its trials never train a human player's surrogate.
+DEFAULT_PLAYER_ID = "default"
+PLAYER_ID_PATTERN = r"^[A-Za-z0-9_-]{1,40}$"
+
+# Overridable so a demo or integration run can write somewhere disposable.
+DATA_DIR = os.getenv("EVOLUTION_DATA_DIR", os.path.join(_BACKEND_DIR, "data"))
+PLAYERS_DIR = os.path.join(DATA_DIR, "players")
 SESSION_LOG_FILE = os.path.join(DATA_DIR, "session_log.jsonl")
+# v1 of the backend kept a single archive in data/mcc_state.json. It is not
+# loaded: those designs were judged on maps that changed from trial to trial,
+# so their pass/fail outcomes do not carry over to the fixed environment.

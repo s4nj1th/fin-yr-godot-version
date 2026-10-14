@@ -45,8 +45,11 @@ def genome_to_features(params: dict[str, Any]) -> list[float]:
 
 
 class Surrogate:
-    def __init__(self, min_labels: int) -> None:
+    def __init__(self, min_labels: int, window: int = 0) -> None:
         self.min_labels = min_labels
+        # 0 = fit on every real outcome; N > 0 = fit on only the most recent N,
+        # so the model can follow a player whose skill changes.
+        self.window = window
         self.x_train: list[list[float]] = []
         self.y_train: list[float] = []
         self._model: Optional[GaussianProcessRegressor] = None
@@ -65,19 +68,48 @@ class Surrogate:
         self._retrain()
 
     def predict(self, params: dict[str, Any]) -> tuple[float, float]:
+        """(pass probability, total predictive std)."""
+        prob, total_std, _ = self.predict_detailed(params)
+        return prob, total_std
+
+    def predict_detailed(self, params: dict[str, Any]) -> tuple[float, float, float]:
+        """(pass probability, total predictive std, epistemic std).
+
+        scikit-learn evaluates the WhiteKernel term on the test point too, so
+        the predictive variance is exactly var_epistemic + noise, where noise
+        is the fitted WhiteKernel level (the irreducible randomness of
+        pass/fail outcomes). The epistemic part — what more data would
+        remove — is recovered by subtracting it."""
         if self._model is None:
-            return 0.5, 1.0  # maximally uncertain fallback before the model is trained
+            return 0.5, 1.0, 1.0  # maximally uncertain fallback before the model is trained
 
         features = np.array([genome_to_features(params)])
         mean, std = self._model.predict(features, return_std=True)
         prob = float(np.clip(mean[0], 0.0, 1.0))
-        return prob, float(std[0])
+        total_std = float(std[0])
+        epistemic = float(np.sqrt(max(0.0, total_std ** 2 - self.noise_level)))
+        return prob, total_std, epistemic
+
+    def predict_mean(self, params_list: list[dict[str, Any]]) -> np.ndarray:
+        """Unclipped posterior means for several genomes at once."""
+        if self._model is None:
+            return np.full(len(params_list), 0.5)
+        return self._model.predict(np.array([genome_to_features(p) for p in params_list]))
+
+    @property
+    def noise_level(self) -> float:
+        """Fitted outcome-noise variance (the WhiteKernel term), 0 before training."""
+        if self._model is None:
+            return 0.0
+        return float(self._model.kernel_.k2.noise_level)
 
     def _retrain(self) -> None:
         # A GP fit needs both classes represented to say anything meaningful —
         # with only one class seen so far, every prediction would just be a
         # constant, so hold off rather than fit (and report) a useless model.
-        if len(self.y_train) < 2 or len(set(self.y_train)) < 2:
+        x_fit = self.x_train[-self.window:] if self.window > 0 else self.x_train
+        y_fit = self.y_train[-self.window:] if self.window > 0 else self.y_train
+        if len(y_fit) < 2 or len(set(y_fit)) < 2:
             self._model = None
             return
 
@@ -85,13 +117,19 @@ class Surrogate:
             + WhiteKernel(noise_level=0.1, noise_level_bounds=(1e-4, 1.0))
 
         model = GaussianProcessRegressor(kernel=kernel, normalize_y=False, n_restarts_optimizer=2, alpha=1e-6)
-        model.fit(np.array(self.x_train), np.array(self.y_train))
+        model.fit(np.array(x_fit), np.array(y_fit))
         self._model = model
 
     def state_dict(self) -> dict[str, Any]:
         return {"x_train": self.x_train, "y_train": self.y_train}
 
     def load_state(self, state: dict[str, Any]) -> None:
-        self.x_train = state.get("x_train", [])
-        self.y_train = state.get("y_train", [])
+        x_train = state.get("x_train", [])
+        y_train = state.get("y_train", [])
+        n_features = len(FEATURE_KEYS) + len(BEHAVIOR_TYPES)
+        # Training data saved with a different genome layout cannot be reused.
+        if len(x_train) != len(y_train) or any(len(x) != n_features for x in x_train):
+            x_train, y_train = [], []
+        self.x_train = x_train
+        self.y_train = y_train
         self._retrain()

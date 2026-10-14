@@ -9,7 +9,7 @@ generations. It is separate from, and downstream of, the two systems it
 draws on — [ENEMY_AI.md](ENEMY_AI.md) (what each archetype's movement rule
 does), [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md) (the
 player-adaptive countermeasures), and
-[EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md) (the MCC loop that evolves
+[EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md) (the evolution loop that evolves
 `enemy_behavior_mix`).
 
 ## Why this exists
@@ -17,7 +17,7 @@ player-adaptive countermeasures), and
 Before this, the only telemetry a trial reported was whole-dungeon
 aggregates — total damage taken, deaths, kills, chests, exploration percent
 (`Backend/models.py`'s `TelemetryMetrics`). That answers "was this genome
-good or bad" for the MCC minimal criterion, but not "which archetype did
+good or bad" for the minimal criterion, but not "which archetype did
 the damage," "which archetype gets exploited from the rear," or "does the
 adaptive rear-guard/search countermeasure actually change an archetype's
 outcomes." Answering those needs telemetry attributed to the specific
@@ -78,8 +78,8 @@ existing `POST /api/report_outcome` call — no new endpoint. Shape:
 This is additive: `enemy_behavior_breakdown` defaults to `{}` on both
 sides, so an older client talking to a newer backend (or vice versa) still
 round-trips the rest of `TelemetryMetrics` exactly as before. It rides
-inside the same `telemetry` object `MCCManager` already logs verbatim to
-`Backend/data/session_log.jsonl` — no changes to `mcc.py`'s logging or
+inside the same `telemetry` object `AdaptiveEvolutionManager` already logs verbatim to
+`Backend/data/session_log.jsonl` — no changes to `adaptive_evolution.py`'s logging or
 Hall-of-Fame logic were needed.
 
 **Every `session_log.jsonl` entry recorded before this instrumentation
@@ -89,7 +89,7 @@ treats that as "no data yet," not as zero — see
 
 ## Analysis: `Backend/behavior_analytics.py` + `Backend/analyze_behavior_telemetry.py`
 
-Split the same way `mcc.py`/`main.py` are: `behavior_analytics.py` is pure,
+Split the same way `adaptive_evolution.py`/`main.py` are: `behavior_analytics.py` is pure,
 unit-tested aggregation math (`Backend/tests/test_behavior_analytics.py`,
 no plotting import); `analyze_behavior_telemetry.py` is a thin CLI that
 turns that math into charts. This was a deliberate choice over a live
@@ -123,7 +123,7 @@ silent gap) if their prerequisite data isn't there yet:
    archetype, per generation. Works on *every* `report_outcome` trial ever
    logged, including pre-instrumentation ones, since `enemy_behavior_mix`
    has been part of the genome contract since the evolutionary loop's
-   first version. Answers "what mix does MCC keep proposing," the coarse
+   first version. Answers "what mix does the search keep proposing," the coarse
    half of "how it's evolving."
 2. **`archetype_profile.png`** — one bar-chart-per-metric small multiple
    (`damage_per_spawn`, `damage_taken_per_spawn`, `kill_rate`,
@@ -131,7 +131,7 @@ silent gap) if their prerequisite data isn't there yet:
    "how is archetype A different from archetype B."
 3. **`archetype_evolution.png`** — the same headline metrics as a line
    chart across genome generations, one line per archetype. The finer half
-   of "how it's evolving": not just the mix weight MCC proposes, but what
+   of "how it's evolving": not just the mix weight the search proposes, but what
    each archetype actually *does* in combat as generations pass.
 4. **`situational_comparison.png`** — grouped bars (baseline vs. adapted)
    per archetype per metric. Answers "does the adaptation director's
@@ -184,7 +184,7 @@ average":
 **Why this matters here specifically, not just as a generic statistics
 feature:**
 
-- **MCC's minimal criterion is coarse** (`_evaluate_minimal_criterion` only
+- **The minimal criterion is coarse** (`_evaluate_minimal_criterion` only
   checks exit-reached/quit/time/deaths). A genome can pass it while
   producing something degenerate — e.g. 118 enemies crammed into a small
   room, or one archetype dealing 10x its usual damage because a difficulty

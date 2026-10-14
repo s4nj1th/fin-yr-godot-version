@@ -1,172 +1,96 @@
-# Project Context (Current Playable State)
+# Project Context — Game Client Runtime
 
-Project name: Closed-Loop LLM PCG Dungeon Crawler (Godot C#)
-Engine: Godot 4.3 Mono
-Framework: .NET 8.0
+Project: **Adaptive Dungeon Crawler** — adaptive learning of enemy encounters
+in a procedural dungeon crawler.
+Engine: Godot 4.7 (.NET / C#), .NET 8. Backend: Python 3, FastAPI.
 
-This file reflects the current runtime setup used for gameplay and AI testing.
+This file describes the Godot client as it runs today. The evolution backend
+is described in [EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md), the enemy AI
+in [ENEMY_AI.md](ENEMY_AI.md) and [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md).
 
-## 1. Current Focus
+## 1. Scenes
 
-The active prototype is now a 3D top-down dungeon experience with:
+| Scene | Purpose |
+|---|---|
+| [Main.tscn](../Main.tscn) | **The game** (startup scene): the dungeon, the evolution loop, the adaptive enemy director |
+| [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn) | Sandbox: two melee archetypes in a small arena |
+| [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn) | Sandbox: two ranged archetypes in a small arena |
 
-1. Very large procedural maps.
-2. Shader-based fog-of-war with discovery memory.
-3. Capsule player and capsule enemies.
-4. Dedicated enemy AI sandbox scenes for behavior iteration.
+## 2. One trial, end to end
 
-The main loop no longer depends on the older 2D-only renderer path for primary testing.
+[`GameManager.cs`](../Scripts/Core/GameManager.cs) drives the loop:
 
-## 2. Active Main Scene and Core Runtime
+1. **Fetch a design.** `ApiClient.RequestNextGenomeAsync(PlayerId)` →
+   `POST /api/next_candidate?player_id=…`. If the backend is unreachable, the
+   client uses its built-in default design and the same fixed map, so play
+   is never blocked.
+2. **Build the dungeon.** `RegenerateDungeon` seeds the generator with the
+   design's `map_seed` (fixed at 123, so every trial has the same layout),
+   places up to 280 non-overlapping rooms (4–12 × 4–10 tiles) on a 160×160
+   grid, joins them with corridors, and rolls each room except the start
+   room for a trap, chest, heal tile or enemy spawn against cumulative
+   thresholds. It logs `[Dungeon] seed=… rooms=… enemies=…`.
+3. **Spawn enemies.** Each spawn point gets one enemy (up to 120); its
+   archetype is drawn from the design's behaviour mix and its HP and attack
+   are multiplied by the design's difficulty scale. Each new enemy also gets
+   a tactical order from the `AdaptationDirector` (Section 4).
+4. **Play.** The player moves on the grid (WASD), attacks with Space (every
+   0.35 s), and must reach the exit under fog of war. On death the player
+   respawns at the start with full health and the trial continues.
+5. **End the trial** on reaching the exit, pressing R (quit), or after 240 s.
+   The telemetry (time, deaths, damage, kills, chests, traps, exploration,
+   per-archetype combat counters) goes to `POST /api/report_outcome`, which
+   applies the minimal criterion and returns pass or fail. The next design is
+   then fetched.
 
-Main scene:
+## 3. Players and the bot
 
-1. [Main.tscn](../Main.tscn)
+- `GameManager.PlayerId` (Inspector) or `--player=NAME` selects whose archive
+  the backend evolves; the HUD shows it.
+- `--autoplay` lets `BotPlayerPolicy` drive the player (BFS to the exit,
+  backing off below 30% health). Bot trials are tagged `evaluator_type=bot`
+  and, unless `--player` is given, belong to player `bot`.
+  `--autoplay-max-trials=N` and `--autoplay-timescale=X` control a batch run.
 
-Main runtime script:
+## 4. Within-session tactical adaptation
 
-1. [Scripts/Core/GameManager.cs](../Scripts/Core/GameManager.cs)
+Separate from the evolution loop, the client adapts enemy *tactics* during a
+session (see [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md)):
 
-Current GameManager responsibilities:
+- `PlayerBehaviorTelemetry` counts hits by direction, line-of-sight breaks,
+  retreats and kiting; `PlayerPlaystyleProfile` blends them with decay 0.8
+  and a confidence that reaches 1 after three hits or line-of-sight breaks.
+- `AdaptationDirector` activates *rear defence* after three rear hits (rear
+  preference > 0.35, confidence > 0.5) and a *stealth countermeasure* after
+  three line-of-sight breaks (confidence > 0.5), each with an 8 s cooldown
+  and minimum duration. Newly spawned enemies receive the active order with
+  probability equal to the confidence clamped to [0.3, 0.9].
+- Enemies with a stealth order use `EnemyPerception` (unaware → tracking →
+  investigating 3 s → searching 5 s → returning 3 s), `GridLineOfSight` and
+  BFS (`GridPathfinder`) to search the player's last known position.
 
-1. Generates a large tile map from configurable settings.
-2. Builds a 3D top-down arena from primitive meshes.
-3. Handles player movement on a grid with normal axes.
-4. Spawns enemies and updates their AI each frame.
-5. Applies fog shader parameters and discovery updates.
-6. Supports full map regeneration with R key.
+## 5. Fog of war
 
-Important tuneables in DungeonGenerationSettings:
+A spatial-shader quad over the map darkens everything outside the reveal
+radius (6.5 tiles), with a dimmer state for tiles already discovered; a
+discovery texture records what the player has seen.
 
-1. MapWidth / MapHeight
-2. RoomAttempts
-3. Room min and max dimensions
-4. FogRevealRadius
-5. FogFeather
-6. FogOpacity and FogDiscoveredOpacity
+## 6. Tile codes
 
-## 3. Fog-of-War Model
+| Code | Tile | Code | Tile |
+|---|---|---|---|
+| 0 | wall | 5 | enemy spawn |
+| 1 | floor | 6 | chest |
+| 2 | corridor | 7 | start |
+| 3 | door (reserved; not placed by the current generator) | 8 | exit |
+| 4 | trap | 9 | heal |
 
-Fog behavior now has two states for non-visible regions:
+## 7. Automated tests
 
-1. Undiscovered: hidden under stronger fog.
-2. Discovered: dimmed under lighter fog.
-
-Implementation notes:
-
-1. A discovery texture is maintained in memory and updated as player reveals tiles.
-2. Fog is rendered through a spatial shader overlay quad.
-3. Shader blends between undiscovered and discovered opacity from the discovery map.
-
-Primary code:
-
-1. [Scripts/Core/GameManager.cs](../Scripts/Core/GameManager.cs)
-
-## 4. Enemy System (Current)
-
-Primary enemy script:
-
-1. [Scripts/Entities/EnemyController.cs](../Scripts/Entities/EnemyController.cs)
-
-Detailed enemy documentation:
-
-1. [docs/ENEMY_AI.md](ENEMY_AI.md)
-
-Current visual and debug model:
-
-1. Enemy body is a capsule mesh.
-2. Enemy carries an 8x8 NN-style debug grid board behind it.
-3. Grid cells visualize a local map window, the player cell, and cells adjacent to the player.
-4. The board is a visualization of local state; it is not a neural-network inference layer and does not choose actions.
-
-Grid and movement summary:
-
-1. `GridPos` is the authoritative enemy location as integer `(x, y)` coordinates.
-2. The map array is indexed as `grid[y, x]`, while `Vector2I` stores `X` and `Y`.
-3. An enemy evaluates only the four cardinal neighboring cells and rejects coordinates outside the map or with tile value `0`.
-4. Normal movement uses Manhattan distance to the player and greedily selects the best legal neighbor. It does not currently use A\*, BFS, line-of-sight checks, or a reservation system for other enemies.
-5. The 8x8 board covers a local window around the enemy and encodes wall/out-of-bounds, player, adjacent-to-player, and ordinary walkable cells. See [ENEMY_AI.md](ENEMY_AI.md) for the exact coordinate and color mapping.
-
-Current behavior types (AI differs, stats can remain identical in test scenes):
-
-1. melee_chaser
-2. melee_hit_run
-3. ranged_kite
-4. ranged_strafe
-
-Behavior design rule in this branch:
-
-1. AI changes movement and post-attack repositioning only.
-2. Stats such as HP, speed, attack, and reward can stay constant for controlled tests.
-
-## 5. Dedicated AI Test Scenes
-
-Two separate scenes exist for isolated behavior testing:
-
-1. [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn)
-2. [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn)
-
-Shared scene driver script:
-
-1. [Scripts/Core/EnemyAiTestScene.cs](../Scripts/Core/EnemyAiTestScene.cs)
-
-What each test scene contains:
-
-1. Player capsule with WASD movement.
-2. Two enemies in the selected category (melee or ranged).
-3. Same base stats for both enemies in that scene.
-4. Different AI behavior per enemy.
-5. Arena obstacles for pathing and attack-style visibility.
-
-## 6. Tile Semantics in Use
-
-Tile IDs are still aligned with project logic:
-
-1. 0 = Wall
-2. 1 = Floor
-3. 2 = Corridor
-4. 3 = Door
-5. 4 = Trap
-6. 5 = Enemy spawn
-7. 6 = Chest reward
-8. 7 = Start
-9. 8 = Exit
-
-Current visuals:
-
-1. Reward marker is a cube.
-2. Player and enemies are capsules.
-
-## 7. Known Legacy vs Active Paths
-
-Legacy scripts still exist for earlier 2D and backend flow work, but current vibe-coding work should prioritize:
-
-1. [Scripts/Core/GameManager.cs](../Scripts/Core/GameManager.cs)
-2. [Scripts/Entities/EnemyController.cs](../Scripts/Entities/EnemyController.cs)
-3. [Scripts/Core/EnemyAiTestScene.cs](../Scripts/Core/EnemyAiTestScene.cs)
-4. [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn)
-5. [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn)
-
-## 8. Quick Run Targets
-
-For AI behavior iteration:
-
-1. Run current scene with [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn)
-2. Run current scene with [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn)
-
-For main large-map dungeon loop:
-
-1. Run [Main.tscn](../Main.tscn)
-
-For the full explanation of enemy state, movement heuristics, attack timing, and grid encoding:
-
-1. Read [ENEMY_AI.md](ENEMY_AI.md)
-
-## 9. Next Recommended Extensions
-
-If continuing this branch, most aligned next steps are:
-
-1. Convert large map into streamed chunk generation for true infinite traversal.
-2. Persist discovered fog state per chunk.
-3. Add in-scene labels for AI type and current state machine phase.
-4. Add deterministic seed controls for reproducible AI tests.
+- `Tests/` (xUnit, `dotnet test`): the engine-independent AI code —
+  attack-direction classification, line of sight, pathfinding, playstyle
+  profile, adaptation director, behaviour telemetry, bot policy.
+- `Backend/tests/` (pytest): genome, surrogate, evolution manager, HTTP API,
+  simulated player, LLM-output parsing, behaviour analytics.
+- [INTEGRATION_TESTING.md](INTEGRATION_TESTING.md): end-to-end runs of the
+  real game against the real backend.

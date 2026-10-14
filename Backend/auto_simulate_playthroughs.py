@@ -1,118 +1,76 @@
 """
-Auto-Playthrough Simulator for Evolutionary Dungeon Crawler
+Offline demo of the evolution loop: runs the real AdaptiveEvolutionManager
+against a simulated player (simulated_player.py) instead of the Godot game.
 
-This script bypasses the 3D Godot game and talks directly to the local MCCManager.
-It simulates an "AI Player" completing hundreds of dungeons in seconds to generate
-REAL evolutionary data, train the surrogate on real predictions, and evolve the genomes.
+The simulated player is a controlled oracle whose true pass probability is
+known for every design, so the run can also report what is invisible with a
+human player: how many archived designs this player would actually fail.
 
-Run with:
-    python auto_simulate_playthroughs.py
+Each run plays as its own player id (default "sim-<skill>"), so it never
+touches a human player's archive.
+
+    python auto_simulate_playthroughs.py                         # intermediate player, 100 trials
+    python auto_simulate_playthroughs.py --skill novice --trials 60 --reset
 """
 
+from __future__ import annotations
+
+import argparse
 import os
-import random
-import time
-from mcc import MCCManager
+
+import numpy as np
+
 import config
 
-BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BACKEND_DIR, "data")
+config.LLM_MUTATION_MODE = "off"  # a fast offline run should never call an LLM
 
-def clear_old_data():
-    """Wipe out the old fake demo data so we start fresh from generation 0."""
-    state = os.path.join(DATA_DIR, "mcc_state.json")
-    log = os.path.join(DATA_DIR, "session_log.jsonl")
-    if os.path.exists(state): 
-        with open(state, 'w') as f: pass
-    if os.path.exists(log): 
-        with open(log, 'w') as f: pass
+from adaptive_evolution import AdaptiveEvolutionManager, player_state_file  # noqa: E402
+from simulated_player import SimulatedPlayer, calibrate_kappa  # noqa: E402
 
-def simulate_ai_player(genome_params):
-    """
-    Simulates how an average player would perform based on the map's genome.
-    If the map is too hard (high enemy stats, lots of traps), probability of death goes up.
-    """
-    difficulty = genome_params.get("enemy_difficulty_scale", 1.0)
-    traps = genome_params.get("trap_density", 0.1)
-    enemies = genome_params.get("enemy_density", 0.1)
-    
-    # Calculate a danger score (Higher is harder)
-    danger_score = (difficulty * 1.5) + (traps * 2.0) + (enemies * 1.0)
-    
-    # Defaults
-    telemetry = {
-        "time_taken_sec": 45.0 + (danger_score * 20),
-        "damage_taken": int(30 * danger_score),
-        "health_remaining": max(0, 100 - int(30 * danger_score)),
-        "deaths_retries": 0,
-        "enemies_killed": int(15 * enemies),
-        "total_enemies": int(20 * enemies),
-        "chests_opened": 3,
-        "total_chests": 5,
-        "traps_triggered": int(10 * traps),
-        "exploration_percent": 85.0,
-        "exit_reached": True,
-        "quit_early": False
-    }
-    
-    # If danger is too high, the player dies multiple times or fails to reach the exit
-    if danger_score > 3.0:
-        if random.random() < 0.6:
-            telemetry["deaths_retries"] = random.randint(4, 7) # Fails criteria (> 3 deaths)
-    elif danger_score > 2.5:
-        if random.random() < 0.4:
-            telemetry["deaths_retries"] = random.randint(2, 4)
-            
-    # Sometimes the player just abandons if it takes too long
-    # If danger is too high, the player dies multiple times or fails to reach the exit
-    if danger_score > 3.0:
-        if random.random() < 0.6:
-            telemetry["deaths_retries"] = random.randint(4, 7) # Fails criteria (> 3 deaths)
-    elif danger_score > 2.5:
-        if random.random() < 0.4:
-            telemetry["deaths_retries"] = random.randint(2, 4)
-            
-    # Sometimes the player just abandons if it takes too long
-    if telemetry["time_taken_sec"] > 220:
-        telemetry["exit_reached"] = False
-        telemetry["quit_early"] = True
+# Share of random designs each simulated player clears (see calibrate_kappa).
+SKILLS = {"novice": 0.25, "intermediate": 0.50, "expert": 0.75}
 
-    return telemetry
 
-def run_simulation(target_hof_size=100):
-    print("🧹 Clearing old static data...")
-    clear_old_data()
-    
-    print("🤖 Booting MCC Manager and starting AI Player simulation...")
-    manager = MCCManager()
-    
-    iterations = 0
-    while manager.hall_of_fame_size < target_hof_size:
-        iterations += 1
-        # 1. Ask the backend for a candidate (This runs the Surrogate model!)
-        candidate, surrogate_estimate = manager.get_next_candidate()
-        genome_id = candidate["id"]
-        
-        if surrogate_estimate is None:
-            decision = "(Surrogate Uncertain -> Sent to AI Player)"
-            # 2. Simulate the AI Player struggling or beating the map
-            telemetry = simulate_ai_player(candidate["params"])
-            
-            # 3. Report the result back to MCC
-            passed, reason = manager.report_outcome(genome_id, telemetry)
-            outcome = "PASS ✅" if passed else f"FAIL ❌ ({reason})"
-        else:
-            prob = surrogate_estimate["prob"]
-            outcome = "AUTO-ACCEPTED 🤖" if prob >= 0.5 else "AUTO-REJECTED 🗑️"
-            decision = f"(Surrogate Confident: {prob:.2f} prob)"
-            
-        if iterations % 10 == 0:
-            print(f"Archive Size: {manager.hall_of_fame_size}/{target_hof_size} (Iteration {iterations})")
-            
-    print("\n✅ Simulation Complete!")
-    print(f"📊 Final Hall of Fame Size: {manager.hall_of_fame_size}")
-    print(f"🤖 Surrogate model is now trained with {len(manager.surrogate.y_train)} real outcomes.")
-    print("You can now safely run 'python generate_metrics_plots.py' to plot this real data!")
+def run(skill: str, trials: int, player_id: str, seed: int) -> None:
+    player = SimulatedPlayer(kappa=calibrate_kappa(SKILLS[skill]))
+    manager = AdaptiveEvolutionManager(player_id)
+    rng = np.random.default_rng(seed)
+
+    print(f"Simulated {skill} player as '{player_id}' (kappa={player.kappa:.2f}); "
+          f"gate={manager.gate_uncertainty}, bootstrap={manager.bootstrap}\n")
+    failures = 0
+    for trial in range(1, trials + 1):
+        candidate, _ = manager.get_next_candidate()
+        # A simulated player is a scripted evaluator, so its trials are tagged "bot".
+        passed, reason = manager.report_outcome(candidate["id"], player.play(candidate["params"], rng),
+                                                evaluator_type="bot")
+        failures += not passed
+        if trial % 10 == 0 or trial == trials:
+            stats = manager.stats
+            print(f"trial {trial:4d}: archive {stats['hall_of_fame_size']:5d} "
+                  f"(auto-accepted {stats['auto_accepted']}, auto-rejected {stats['auto_rejected']})")
+
+    archive = manager.hall_of_fame
+    expected_fail = float(np.mean([1 - player.p_pass(g["params"]) for g in archive])) if archive else float("nan")
+    print(f"\nPlayed {trials} trials; the player failed {failures} ({100 * failures / trials:.0f}%).")
+    print(f"Archive: {len(archive)} designs, of which the player would fail {100 * expected_fail:.1f}% on replay.")
+    print(f"State: {player_state_file(player_id)}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--skill", choices=list(SKILLS), default="intermediate")
+    parser.add_argument("--trials", type=int, default=100)
+    parser.add_argument("--player", default=None, help="player id (default: sim-<skill>)")
+    parser.add_argument("--seed", type=int, default=0, help="seed for the simulated outcomes")
+    parser.add_argument("--reset", action="store_true", help="delete this player's saved state first")
+    args = parser.parse_args()
+
+    player_id = args.player or f"sim-{args.skill}"
+    if args.reset and os.path.exists(player_state_file(player_id)):
+        os.remove(player_state_file(player_id))
+    run(args.skill, args.trials, player_id, args.seed)
+
 
 if __name__ == "__main__":
-    run_simulation(100)
+    main()

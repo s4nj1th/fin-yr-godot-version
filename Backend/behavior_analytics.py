@@ -7,7 +7,7 @@ turns its output into charts.
 
 Kept separate from the plotting script so the aggregation math is
 unit-testable without importing matplotlib (matches the split already used
-between mcc.py and main.py — logic vs. the thing that calls it).
+between adaptive_evolution.py and main.py — logic vs. the thing that calls it).
 
 Terminology, matching Scripts/AI/EnemyBehaviorTelemetry.cs:
 - "archetype" / "behavior type": melee_chaser, melee_hit_run, ranged_kite,
@@ -85,6 +85,14 @@ def filter_by_evaluator_type(events: Iterable[dict[str, Any]], evaluator_type: s
     if evaluator_type == "all":
         return list(events)
     return [e for e in events if e.get("evaluator_type", "human") == evaluator_type]
+
+
+def filter_by_player(events: Iterable[dict[str, Any]], player_id: str) -> list[dict[str, Any]]:
+    """player_id, or "all" (no filtering). Records logged before per-player
+    archives existed have no player_id and count as the default player."""
+    if player_id == "all":
+        return list(events)
+    return [e for e in events if e.get("player_id", config.DEFAULT_PLAYER_ID) == player_id]
 
 
 def count_by_evaluator_type(events: Iterable[dict[str, Any]]) -> dict[str, int]:

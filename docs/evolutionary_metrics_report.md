@@ -1,60 +1,64 @@
-# 📊 Evolutionary Dungeon Crawler: Complete Metrics Report
+# Metrics Reference
 
-This report documents the exhaustive list of data points, parameters, and telemetry metrics utilized across the Godot client and Python backend to drive the **Human-Coupled Minimal Criterion Coevolution (MCC)** loop and the **Adaptive Enemy AI**.
+What the system records and measures. Field names match the code.
 
----
+## 1. Encounter genome (evolved by the backend)
 
-## 1. 🧬 The Evolvable Genome (Map Metrics)
-These are the architectural parameters the Python backend evolves and sends to Godot to procedurally generate the actual dungeons.
+| Gene | Range | Meaning |
+|---|---|---|
+| `enemy_density` | 0 – 0.5 | share of rooms that receive an enemy |
+| `enemy_difficulty_scale` | 0.6 – 1.6 | multiplier on every enemy's HP and attack |
+| `enemy_behavior_mix` | 4 weights summing to 1 | spawn share of `melee_chaser`, `melee_hit_run`, `ranged_kite`, `ranged_strafe` |
 
-| Metric Name | Type | Description |
-| :--- | :--- | :--- |
-| `map_width` | Integer (40-160) | The physical X-axis footprint limit of the map. |
-| `map_height` | Integer (40-160) | The physical Y-axis footprint limit of the map. |
-| `room_attempts` | Integer | Max attempts the Cellular Automata uses to carve structural rooms. |
-| `trap_density` | Float (0.0-1.0) | The percentage chance a room node spawns a spike trap. |
-| `enemy_density` | Float (0.0-1.0) | Total capacity ratio of monsters spawned in the dungeon. |
-| `enemy_difficulty_scale` | Float (1.0+) | Mutator that exponentially scales enemy HP and Damage. |
-| `enemy_behavior_mix` | Float (0.0-1.0) | The ratio deciding what percentage of enemies use aggressive vs defensive AI. |
-| `chest_density` | Float (0.0-1.0) | The ratio determining loot placements. |
-| `heal_density` | Float (0.0-1.0) | The ratio determining health regeneration placements. |
+Fixed environment (not evolved, sent with every genome): 160×160 map, 280
+room attempts, trap/chest/heal densities 0.15 each, `map_seed` 123. See
+[EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md).
 
----
+## 2. Trial telemetry (sent by the client after each trial)
 
-## 2. 🏃 Player Telemetry (Gameplay Metrics)
-This is the raw data captured by the Godot `GameManager.cs` every time a player attempts a room. This payload is transmitted to the Python backend to judge if the genome passes the **Minimal Criterion**.
+| Field | Meaning |
+|---|---|
+| `time_taken_sec` | seconds from start to the end of the trial |
+| `damage_taken` | HP lost to enemies over the trial |
+| `health_remaining` | HP at the end of the trial |
+| `deaths_retries` | deaths during the trial (the player respawns at the start) |
+| `enemies_killed` / `total_enemies` | kills and enemies spawned |
+| `chests_opened` / `total_chests` | chests collected and placed |
+| `traps_triggered` | traps stepped on |
+| `exploration_percent` | share of walkable tiles revealed |
+| `exit_reached` | the player reached the exit |
+| `quit_early` | the player pressed R |
+| `enemy_behavior_breakdown` | per archetype, split into baseline and adapted enemies: `spawned`, `attacks_on_player`, `damage_dealt_to_player`, `hits_taken_from_player`, `damage_taken_from_player`, `rear_hits_taken`, `killed_by_player` |
 
-| Metric Name | Type | Description |
-| :--- | :--- | :--- |
-| `time_taken_sec` | Float | Total seconds spent in the map before exiting or dying. |
-| `damage_taken` | Integer | Total numerical HP lost to enemies/traps. |
-| `health_remaining` | Integer | Player's HP upon hitting the exit. |
-| `deaths_retries` | Integer | How many times the player died or pressed 'R' to retry during this single genome. |
-| `enemies_killed` | Integer | Total enemies slain by the player. |
-| `total_enemies` | Integer | Total enemies present on the spawned map. |
-| `chests_opened` | Integer | Total amount of loot collected. |
-| `total_chests` | Integer | Total amount of loot placed on the map. |
-| `traps_triggered` | Integer | Total accidental (or intentional) trap step-ons. |
-| `exploration_percent` | Float (0-100) | The percentage of the Fog-of-War cleared by the player. |
-| `exit_reached` | Boolean | True if the player found the exit tile. |
-| `quit_early` | Boolean | True if the player actively abandoned (pressed R) or idled out. |
+The minimal criterion uses `quit_early`, `exit_reached`, `time_taken_sec`
+(≥ 15 s, < 240 s) and `deaths_retries` (≤ 3).
 
----
+## 3. Playstyle profile (client, within a session)
 
-## 3. 🧠 Adaptive AI (Dynamic Playstyle Metrics)
-Tracked by `AdaptationDirector.cs` internally in the Godot client. These metrics use exponential decay to score real-time combat behavior and issue instantaneous tactical orders to enemy clusters.
+`BackAttackPreference`, `DirectAttackPreference`, `StealthPreference`,
+`Aggression`, `RetreatPreference`, `KitingPreference` — each an
+exponentially decayed ratio (decay 0.8) — and `Confidence`, which reaches 1
+after three hits or line-of-sight breaks. They drive the `AdaptationDirector`
+(see [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md)).
 
-*   **`BackAttackPreference`**: Increases when the player strikes enemies from behind. Triggers the `GuardRear` tactical response, causing enemies to pivot faster.
-*   **`StealthPreference`**: Increases when the player intentionally breaks Line-of-Sight or avoids detection perimeters. Triggers the `SearchLastKnownPosition` tactical response.
-*   **`RetreatPreference`**: Increases when the player continuously backs away while fighting (Kiting).
-*   **`Aggression`**: Scaled by the player's willingness to charge into enemy line-of-sight and trade damage rather than employing stealth.
+## 4. Backend statistics (`GET /api/stats?player_id=…`)
 
----
+`hall_of_fame_size` (archive size), `real_evaluations`, `human_evaluations`,
+`bot_evaluations`, `auto_accepted`, `auto_rejected`, `surrogate_ready`,
+`surrogate_noise_std`, `gate_uncertainty`, `bootstrap`,
+`bootstrap_designs_served`, and the LLM-mutation counters.
 
-## 4. 📈 Evaluation & Presentation Graphics
-These are the high-level aggregate metrics plotted out via `matplotlib` into presentation-ready visual charts (`Backend/data/plots/`).
+## 5. Evaluation metrics (simulation study in the research paper)
 
-1. **Hall of Fame Growth**: The aggregate number of viable map geometries successfully stored in the archive over time. Proves the algorithm is finding solutions without stalling.
-2. **Gene Convergence Trajectories**: A plot tracing exactly how `trap_density` and `enemy_difficulty_scale` naturally stabilize to match the specific player's skill limit across generations. 
-3. **Surrogate Efficiency Ratio**: The percentage of evaluated genomes that were resolved by the Gaussian Process Active Learning model (Auto-Accepted) versus forced into manual play (Human Trials).
-4. **Pass/Fail Distribution**: A pie chart breaking down exactly *why* human runs failed (e.g. `too_slow_abandoned`, `too_many_deaths`, `did_not_reach_exit`) compared to passes.
+| Metric | Definition |
+|---|---|
+| Archive size | designs accepted after a fixed number of playthroughs |
+| Archive E[fail] | mean of 1 − p*(g) over the archive: the chance a design drawn from it would be failed |
+| Played failure rate | share of played designs the player failed |
+| Challenge | median of expected damage / damage budget over the archive |
+| Diversity | mean pairwise distance between designs in the normalized 6-gene space |
+| Surrogate quality | MSE and calibration error against p*, decision accuracy on held-out designs |
+
+Charts of a real run: `Backend/generate_metrics_plots.py --player NAME`
+(archive growth, enemy-gene trajectories, outcome breakdown, evaluation
+split). Charts compare only logged events; nothing is synthesized.
