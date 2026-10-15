@@ -15,6 +15,7 @@ in [ENEMY_AI.md](ENEMY_AI.md) and [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTAT
 | [Main.tscn](../Main.tscn) | **The game** (startup scene): the dungeon, the evolution loop, the adaptive enemy director |
 | [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn) | Sandbox: two melee archetypes in a small arena |
 | [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn) | Sandbox: two ranged archetypes in a small arena |
+| [Scenes/EnemyGallery.tscn](../Scenes/EnemyGallery.tscn) | All seven archetypes, regular and elite, with the floor telegraphs |
 
 ## 2. One trial, end to end
 
@@ -29,11 +30,15 @@ in [ENEMY_AI.md](ENEMY_AI.md) and [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTAT
    places up to 280 non-overlapping rooms (4–12 × 4–10 tiles) on a 160×160
    grid, joins them with corridors, and rolls each room except the start
    room for a trap, chest, heal tile or enemy spawn against cumulative
-   thresholds. It logs `[Dungeon] seed=… rooms=… enemies=…`.
-3. **Spawn enemies.** Each spawn point gets one enemy (up to 120); its
-   archetype is drawn from the design's behaviour mix and its HP and attack
-   are multiplied by the design's difficulty scale. Each new enemy also gets
-   a tactical order from the `AdaptationDirector` (Section 4).
+   thresholds. It logs `[Dungeon] seed=… rooms=… enemies=… elites=…` and the
+   design's genes.
+3. **Spawn enemies.** Each spawn point gets a pack whose size is drawn from
+   the design's `pack_size` (up to 160 enemies in all); each member's
+   archetype is drawn from the behaviour mix and it is an elite with
+   probability `elite_rate`. `EnemyArchetypes.WithModifiers` applies the
+   difficulty scale (HP, attack) and tempo (speed, wind-ups, cooldowns).
+   Each new enemy also gets a tactical order from the `AdaptationDirector`
+   (Section 4), except in study mode.
 4. **Play.** The player moves on the grid (WASD), attacks with Space (every
    0.35 s), and must reach the exit under fog of war. On death the player
    respawns at the start with full health and the trial continues.
@@ -50,7 +55,20 @@ in [ENEMY_AI.md](ENEMY_AI.md) and [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTAT
 - `--autoplay` lets `BotPlayerPolicy` drive the player (BFS to the exit,
   backing off below 30% health). Bot trials are tagged `evaluator_type=bot`
   and, unless `--player` is given, belong to player `bot`.
-  `--autoplay-max-trials=N` and `--autoplay-timescale=X` control a batch run.
+  `--autoplay-max-trials=N` and `--autoplay-timescale=X` control a batch run;
+  `--bot-dodge=Q` makes the bot step out of telegraphed attacks with
+  probability Q; `--backend-url=URL` points the client at another backend.
+
+## 3a. Other modes
+
+- **Duel mode** (`--duel-plan=PLAN.json --duel-out=OUT.jsonl`,
+  `Scripts/Core/GameManager.Duel.cs`): the scripted fighter against packs of
+  one archetype in an open arena; measures engagement damage for the
+  simulated player (`tools/run_duels.py`).
+- **Study mode** (`--study`, `Scripts/Core/GameManager.Study.cs`,
+  `Scripts/UI/StudyFlow.cs`): one session of the human study — participant
+  code, consent, briefing, timed play, replay block, questionnaire
+  ([HUMAN_STUDY_PROTOCOL.md](HUMAN_STUDY_PROTOCOL.md)).
 
 ## 4. Within-session tactical adaptation
 
@@ -87,10 +105,12 @@ discovery texture records what the player has seen.
 
 ## 7. Automated tests
 
-- `Tests/` (xUnit, `dotnet test`): the engine-independent AI code —
-  attack-direction classification, line of sight, pathfinding, playstyle
-  profile, adaptation director, behaviour telemetry, bot policy.
-- `Backend/tests/` (pytest): genome, surrogate, evolution manager, HTTP API,
-  simulated player, LLM-output parsing, behaviour analytics.
+- `Tests/` (xUnit, `dotnet test`, 71 tests): the engine-independent AI code —
+  archetype catalog and modifiers, telegraph geometry, attack-direction
+  classification, line of sight, pathfinding, playstyle profile, adaptation
+  director, behaviour telemetry, exit bot and fighter bot.
+- `Backend/tests/` (pytest, 135 tests): genome spaces, surrogate, evolution
+  manager and remedies, HTTP API and study endpoints, simulated player,
+  LLM-output parsing, behaviour analytics, study export and analysis.
 - [INTEGRATION_TESTING.md](INTEGRATION_TESTING.md): end-to-end runs of the
   real game against the real backend.

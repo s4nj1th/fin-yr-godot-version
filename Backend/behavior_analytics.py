@@ -11,7 +11,7 @@ between adaptive_evolution.py and main.py — logic vs. the thing that calls it)
 
 Terminology, matching Scripts/AI/EnemyBehaviorTelemetry.cs:
 - "archetype" / "behavior type": melee_chaser, melee_hit_run, ranged_kite,
-  ranged_strafe (config.BEHAVIOR_TYPES).
+  ranged_strafe, melee_charger, ranged_bomber, melee_shield (config.BEHAVIOR_TYPES).
 - "situation": baseline vs. adapted — whether the specific enemy involved in
   an event carried an active AdaptationDirector tactical order (rear-guard
   and/or last-known-position search) at the time. This is recorded

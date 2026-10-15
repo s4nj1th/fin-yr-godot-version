@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -106,4 +108,48 @@ public partial class ApiClient : Node
 			return null;
 		}
 	}
+
+	// --- Human study (Backend/study.py) ---
+
+	private async Task<T?> PostJsonAsync<T>(string path, object? body) where T : class
+	{
+		try
+		{
+			HttpContent? content = body == null ? null : new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+			HttpResponseMessage response = await _client.PostAsync($"{BaseUrl}{path}", content);
+			response.EnsureSuccessStatusCode();
+			return JsonSerializer.Deserialize<T>(await response.Content.ReadAsStringAsync());
+		}
+		catch (Exception ex)
+		{
+			GD.PrintErr($"[ApiClient] Study request {path} failed: {ex.Message}");
+			return null;
+		}
+	}
+
+	public Task<StudySessionResponse?> StartStudySessionAsync(string participantId, int sessionNumber) =>
+		PostJsonAsync<StudySessionResponse>("/api/study/session", new StudySessionRequest { ParticipantId = participantId, SessionNumber = sessionNumber });
+
+	public async Task<Questionnaire?> GetQuestionnaireAsync()
+	{
+		try
+		{
+			string body = await _client.GetStringAsync($"{BaseUrl}/api/study/questionnaire");
+			return JsonSerializer.Deserialize<Questionnaire>(body);
+		}
+		catch (Exception ex)
+		{
+			GD.PrintErr($"[ApiClient] Could not load the questionnaire: {ex.Message}");
+			return null;
+		}
+	}
+
+	public async Task<bool> SubmitQuestionnaireAsync(QuestionnaireSubmission submission) =>
+		await PostJsonAsync<Dictionary<string, int>>("/api/study/questionnaire", submission) != null;
+
+	public Task<ReplaySample?> GetReplaySampleAsync(string playerId, int count) =>
+		PostJsonAsync<ReplaySample>($"/api/study/replay_sample?player_id={Uri.EscapeDataString(playerId)}&n={count}", null);
+
+	public async Task<bool> ReportReplayAsync(ReplayOutcomeRequest request) =>
+		await PostJsonAsync<Dictionary<string, bool>>("/api/study/replay_outcome", request) != null;
 }

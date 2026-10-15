@@ -1,0 +1,14 @@
+{
+  "description": "In-game questionnaire shown after each study session. These items were written for this project; they are not a validated instrument. The protocol (docs/HUMAN_STUDY_PROTOCOL.md) pairs them with a validated player-experience questionnaire administered outside the game. Replace or extend the items here; ids must stay unique.",
+  "scale": {"min": 1, "max": 7, "low_label": "strongly disagree", "high_label": "strongly agree"},
+  "items": [
+    {"id": "too_easy", "text": "The enemies were too easy."},
+    {"id": "too_hard", "text": "The enemies were too hard."},
+    {"id": "fair", "text": "When I lost, it felt fair."},
+    {"id": "enjoyed", "text": "I enjoyed this session."},
+    {"id": "varied", "text": "The enemy encounters felt varied."},
+    {"id": "adapted", "text": "The game seemed to adjust to how well I played."},
+    {"id": "frustrated", "text": "I felt frustrated."},
+    {"id": "keep_playing", "text": "I would like to keep playing."}
+  ]
+}

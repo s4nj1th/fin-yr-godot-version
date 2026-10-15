@@ -30,7 +30,10 @@ import config  # noqa: E402
 
 PLOTS_DIR = os.path.join(config.DATA_DIR, "plots")
 BEHAVIOR_COLORS = {"melee_chaser": "#ef4444", "melee_hit_run": "#f59e0b",
-                   "ranged_kite": "#10b981", "ranged_strafe": "#3b82f6"}
+                   "ranged_kite": "#8b5cf6", "ranged_strafe": "#10b981",
+                   "melee_charger": "#d946ef", "ranged_bomber": "#84cc16", "melee_shield": "#3b82f6"}
+GENE_COLORS = {"enemy_density": "#8b5cf6", "enemy_difficulty_scale": "#0f172a", "enemy_tempo": "#f59e0b",
+               "elite_rate": "#eab308", "pack_size": "#14b8a6"}
 
 
 def load_events(log_path: str, player_id: str) -> list[dict]:
@@ -86,10 +89,11 @@ def plot(events: list[dict], out_dir: str, player_id: str) -> None:
     if accepted:
         idx = range(1, len(accepted) + 1)
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-        ax1.plot(idx, [e["params"]["enemy_density"] for e in accepted], color="#8b5cf6", label="enemy density")
-        ax1.plot(idx, [e["params"]["enemy_difficulty_scale"] for e in accepted], color="#0f172a",
-                 label="difficulty scale")
-        ax1.set_ylabel("Gene value")
+        # Each scalar gene as a fraction of its range, so all five share one axis.
+        for gene, (lo, hi) in config.GENOME_BOUNDS.items():
+            ax1.plot(idx, [(e["params"].get(gene, lo) - lo) / (hi - lo) for e in accepted],
+                     color=GENE_COLORS.get(gene, "#64748b"), label=gene.replace("enemy_", "").replace("_", " "))
+        ax1.set_ylabel("Gene (fraction of range)")
         ax1.legend(frameon=False)
         ax1.grid(alpha=0.3)
         for behavior, color in BEHAVIOR_COLORS.items():

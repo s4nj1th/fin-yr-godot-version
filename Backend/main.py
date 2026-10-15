@@ -19,11 +19,22 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Query
 
 import config
+import genome as genome_lib
+import study
 from adaptive_evolution import PlayerRegistry, is_valid_player_id
-from models import NextCandidateResponse, ReportOutcomeRequest, ReportOutcomeResponse
+from models import (
+    NextCandidateResponse,
+    QuestionnaireRequest,
+    ReplayOutcomeRequest,
+    ReportOutcomeRequest,
+    ReportOutcomeResponse,
+    StudySessionRequest,
+    StudySessionResponse,
+)
 
-app = FastAPI(title="Adaptive Enemy Encounter Backend", version="2.0.0")
+app = FastAPI(title="Adaptive Enemy Encounter Backend", version="3.0.0")
 players = PlayerRegistry()
+replays = study.ReplayBlock()
 
 
 def _player(player_id: str):
@@ -53,10 +64,14 @@ def list_players() -> dict:
 @app.get("/api/config")
 def evolution_config() -> dict:
     """What evolves, what is held fixed, and how the surrogate gate is set."""
+    space = genome_lib.get_space()
     return {
-        "evolved_genes": {**{k: list(v) for k, v in config.GENOME_BOUNDS.items()},
-                          "enemy_behavior_mix": list(config.BEHAVIOR_TYPES)},
+        "genome_space": space.name,
+        "evolved_genes": {**{k: list(v) for k, v in space.bounds.items()},
+                          "enemy_behavior_mix": list(space.behaviors)},
         "fixed_environment": config.FIXED_ENVIRONMENT,
+        "surrogate_kernel": config.SURROGATE_KERNEL,
+        "play_threshold": config.PLAY_THRESHOLD,
         "surrogate_gate_uncertainty": config.SURROGATE_GATE_UNCERTAINTY,
         "surrogate_uncertainty_band": list(config.SURROGATE_UNCERTAINTY_BAND),
         "surrogate_std_threshold": config.SURROGATE_STD_THRESHOLD,
@@ -66,6 +81,7 @@ def evolution_config() -> dict:
             "min_trial_seconds": config.MIN_TRIAL_SECONDS,
             "max_trial_seconds": config.MAX_TRIAL_SECONDS,
             "max_deaths_allowed": config.MAX_DEATHS_ALLOWED,
+            "min_damage_taken": config.MIN_DAMAGE_TAKEN,
         },
     }
 
@@ -91,3 +107,58 @@ def report_outcome(
     return ReportOutcomeResponse(
         passed=passed, hall_of_fame_size=manager.hall_of_fame_size, fail_reason=fail_reason, player_id=resolved
     )
+
+
+# --- Human study ------------------------------------------------------------
+
+
+def _participant(participant_id: str) -> str:
+    if not study.is_valid_participant_id(participant_id):
+        raise HTTPException(status_code=422, detail="participant_id must look like P01 (P and 2-3 digits)")
+    return participant_id
+
+
+@app.post("/api/study/session", response_model=StudySessionResponse)
+def study_session(request: StudySessionRequest) -> StudySessionResponse:
+    """Starts a study session: assigns the counterbalanced condition and the
+    player id whose archive this session trains."""
+    participant_id = _participant(request.participant_id)
+    condition = study.condition_for(participant_id, request.session_number)
+    player_id = study.player_id_for(participant_id, condition)
+    players.get(player_id, settings=study.CONDITIONS[condition])
+    study.append_record("sessions", {"participant_id": participant_id, "session_number": request.session_number,
+                                     "condition": condition, "player_id": player_id})
+    return StudySessionResponse(participant_id=participant_id, session_number=request.session_number,
+                                condition=condition, player_id=player_id)
+
+
+@app.get("/api/study/questionnaire")
+def study_questionnaire() -> dict:
+    return study.load_items()
+
+
+@app.post("/api/study/questionnaire")
+def submit_questionnaire(request: QuestionnaireRequest) -> dict:
+    participant_id = _participant(request.participant_id)
+    clean = study.validate_responses(request.responses, study.load_items())
+    study.append_record("questionnaires", {"participant_id": participant_id, "session_number": request.session_number,
+                                           "player_id": request.player_id, "responses": clean,
+                                           "comment": request.comment})
+    return {"stored_items": len(clean)}
+
+
+@app.post("/api/study/replay_sample")
+def replay_sample(player_id: str = Query(...), n: int = Query(study.REPLAY_SAMPLE_SIZE, ge=1, le=10)) -> dict:
+    """Archived designs for the end-of-session replay block."""
+    return {"player_id": player_id, "designs": replays.sample(_player(player_id), n)}
+
+
+@app.post("/api/study/replay_outcome")
+def replay_outcome(request: ReplayOutcomeRequest) -> dict:
+    """Outcome of a replayed design: recorded for the analysis only; the
+    archive and the surrogate are not changed."""
+    passed = replays.report(request.genome_id, request.player_id, request.telemetry.model_dump(),
+                            _player(request.player_id))
+    if passed is None:
+        raise HTTPException(status_code=404, detail="Unknown or already-reported replay id for this player")
+    return {"passed": passed}

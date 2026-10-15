@@ -244,6 +244,10 @@ void fragment() {
 			_hpBar.Value = currentHp;
 			_scoreLabel.Text = $"SCORE {gameManager.Score}";
 			_playerLabel.Text = $"PLAYER {gameManager.PlayerId.ToUpperInvariant()}";
+			if (gameManager.StudyStatus is { } studyStatus)
+			{
+				_timeLabel.Text = studyStatus;
+			}
 			_exitLabel.Text = DescribeExit(gameManager.PlayerGridPosition, gameManager.ExitGridPosition);
 			_hpLabel.Visible = true;
 			_hpBar.Visible = true;

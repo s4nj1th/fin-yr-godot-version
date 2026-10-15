@@ -57,6 +57,9 @@ ARCHETYPE_COLORS = {
     "melee_hit_run": "#eb6834",
     "ranged_kite": "#1baf7a",
     "ranged_strafe": "#eda100",
+    "melee_charger": "#c13b91",
+    "ranged_bomber": "#7a5af5",
+    "melee_shield": "#5f6b7a",
 }
 # Baseline vs. adapted is a two-way situational split, not an archetype
 # identity, so it gets its own two slots (blue/orange) reused consistently

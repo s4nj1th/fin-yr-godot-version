@@ -1,10 +1,12 @@
 # Integration Testing
 
-Unit tests check each module on its own (`Backend/tests/`, `Tests/`). The
-two scripts in [`tools/`](../tools/) check the real game and the real
-backend working together. Both run the Godot game headless with the scripted
-bot, so they need a Godot 4 .NET binary (`--godot PATH` or the `GODOT`
-environment variable) and a free port 8001.
+Unit tests check each module on its own (`Backend/tests/`, 135 tests;
+`Tests/`, 71 tests). The scripts in [`tools/`](../tools/) check the real game
+and the real backend working together and measure the game for the
+simulated player. They run the Godot game headless with a fixed frame time
+(`--fixed-fps 60`), so a run plays as fast as the machine allows and is
+reproducible. They need a Godot 4 .NET binary (`--godot PATH` or the `GODOT`
+environment variable); the end-to-end tests also need a free port 8001.
 
 ## 1. End-to-end test — `tools/integration_test.py`
 
@@ -22,6 +24,7 @@ game, and checks:
 | every dungeon used the fixed seed | the map is not evolved (panel review) |
 | same layout and resources every trial | rooms, traps, chests and heals are identical — only the enemies change |
 | every played design carried the fixed environment | the backend never hands out a different map |
+| each dungeon used the design's tempo, elites and packs | the new genes reach the game unchanged |
 | backend recorded every trial | outcomes reach `/api/report_outcome` and are evaluated |
 | all trials counted as bot evaluations | bot trials are labelled `evaluator_type=bot` |
 | only the bot's archive was written | per-player archives: bot data never touches a human player |
@@ -29,23 +32,38 @@ game, and checks:
 **Result (8 trials, 15 Oct 2026): all checks passed.**
 
 ```
-Fixed dungeon: seed 123, 116 rooms; enemies per trial: [3, 3, 3, 3, 17, 27, 12, 0]
-Outcomes: ['pass', 'pass', 'pass', 'pass', 'pass', 'pass', 'pass', 'pass']
+Fixed dungeon: seed 123, 116 rooms; enemies per trial: [39, 63, 46, 51, 51, 34, 75, 34], elites: [13, 17, 7, 9, 9, 5, 17, 9]
+Outcomes: ['pass', 'too_slow_abandoned', 'too_slow_abandoned', 'pass', 'pass', 'pass', 'pass', 'pass']
 
-[PASS] game exited normally                               exit code 0
-[PASS] game built one dungeon per trial                   8 dungeons for 8 trials
-[PASS] every dungeon used the fixed seed                  seeds [123]
-[PASS] every dungeon had the same layout and resources    (rooms, traps, chests, heals) = [(116, 17, 18, 22)]
-[PASS] every played design carried the fixed environment  8 reported trials
-[PASS] backend recorded every trial                       real_evaluations = 8
-[PASS] all trials counted as bot evaluations              bot = 8, human = 0
-[PASS] only the bot's archive was written                 players with state: ['bot']
+[PASS] game exited normally                                    exit code 0
+[PASS] game built one dungeon per trial                        8 dungeons for 8 trials
+[PASS] every dungeon used the fixed seed                       seeds [123]
+[PASS] every dungeon had the same layout and resources         (rooms, traps, chests, heals) = [('116', '17', '18', '22')]
+[PASS] every played design carried the fixed environment       8 reported trials
+[PASS] each dungeon used the design's tempo, elites and packs  (tempo, elite_rate, pack_size) of trial 1: ('1.147', '0.338', '1.253')
+[PASS] backend recorded every trial                            real_evaluations = 8
+[PASS] all trials counted as bot evaluations                   bot = 8, human = 0
+[PASS] only the bot's archive was written                      players with state: ['bot']
 ```
 
-The enemy count follows the evolved enemy density while the dungeon stays
-the same.
+The enemy count follows the evolved density and pack size while the dungeon
+stays the same.
+
+### The study session — `tools/integration_test.py --study`
+
+Runs one complete human-study session with the study screens filled in
+automatically (`--study-auto=P01:1`) and the bot playing, and checks that
+participant P01's first session was assigned condition MC and player id
+`P01-MC`, that only that archive was trained, that the MC condition made no
+surrogate decisions, that the replay block replayed a sample of the archive
+without changing the archive or the surrogate, that the questionnaire was
+stored with every item answered, and that no tactical orders were given.
+**Result (15 Oct 2026): all checks passed.**
 
 ## 2. Choosing the fixed map — `tools/scan_map_seeds.py`
+
+(The scan was run with the original four archetypes, before the enemy
+update; the map, and so the choice of seed, did not change.)
 
 Because only the enemies evolve, the fixed map has to be one on which the
 enemies matter. The scan plays the bot through candidate seeds with the same
@@ -98,11 +116,35 @@ default (`MAP_SEED` in `Backend/config.py`, `GenomeParams.MapSeed` in the
 client). It also has 116 rooms, i.e. 114 rooms that can hold an enemy, which
 is the value the simulated player uses (`Backend/simulated_player.py`).
 
+## 3. Measuring the enemies — `tools/run_duels.py`
+
+```bash
+python tools/run_duels.py            # 13,440 duels on 10 parallel games, about a minute
+```
+
+Plays the scripted fighter (`Scripts/AI/FighterBotPolicy.cs`) against packs
+of each archetype in the game's duel arena (`-- --duel-plan=... --duel-out=...`)
+over difficulty scale, tempo, elite status, pack size and the fighter's
+reaction skill, and writes the mean damage per condition to
+`Backend/duel_table.json` — the simulated player's damage model. Held-out
+conditions check the interpolation (R² = 0.98).
+
+## 4. Checking the simulator in the full dungeon — `tools/validate_simulator.py`
+
+```bash
+Backend/.venv/bin/python tools/validate_simulator.py --designs 80 --trials 2
+```
+
+Plays random designs with the exit bot in the real dungeon, eight games in
+parallel (each against its own stand-in backend, `--backend-url`), and
+compares the damage taken with the simulator's predicted threat.
+**Result: Spearman ρ = 0.79 over 160 trials.**
+
 ## What these tests do not show
 
 The bot knows where the exit is, walks straight to it and does not fight on
 purpose, so it meets far fewer enemies than a person exploring under fog of
-war; on seed 123 it clears even the hardest design. It is right for testing
-the integration, but its outcomes say little about how hard a design is for
-a human player. That question is answered with the simulated player
+war; it is right for testing the integration and for checking that the
+simulator ranks designs as the game does, but its outcomes say little about
+how hard a design is for a human player. That question is answered with the simulated player
 (see the research paper) and, next, with the human study described in the paper.

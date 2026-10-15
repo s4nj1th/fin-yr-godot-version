@@ -18,12 +18,12 @@ class TelemetryMetrics(BaseModel):
     quit_early: bool = False
     # Per-archetype, per-situation combat counters for this trial. Shape:
     # {behavior_type: {"baseline": {counters}, "adapted": {counters}}},
-    # where behavior_type is melee_chaser/melee_hit_run/ranged_kite/
-    # ranged_strafe, "adapted" means the specific enemy involved carried an
+    # where behavior_type is one of config.BEHAVIOR_TYPES, "adapted" means the specific enemy involved carried an
     # active AdaptationDirector tactical order, and counters is a flat dict
     # (spawned, attacks_on_player, damage_dealt_to_player,
     # hits_taken_from_player, damage_taken_from_player, rear_hits_taken,
-    # killed_by_player). Populated by Scripts/AI/EnemyBehaviorTelemetry.cs,
+    # killed_by_player, elites_spawned, telegraphed_attacks, attacks_dodged,
+    # hits_blocked). Populated by Scripts/AI/EnemyBehaviorTelemetry.cs,
     # attributed per-enemy at the moment of each combat event — not
     # approximated after the fact. Defaults to {} so older clients (and
     # every pre-existing session_log.jsonl entry) stay valid — this is
@@ -58,6 +58,9 @@ class GenomeParams(BaseModel):
     enemy_density: float
     enemy_behavior_mix: dict[str, float]
     enemy_difficulty_scale: float
+    enemy_tempo: float = 1.0
+    elite_rate: float = 0.0
+    pack_size: float = 1.0
     # Fixed dungeon layout seed (0 = a new random layout every trial).
     map_seed: int = 0
 
@@ -89,3 +92,32 @@ class ReportOutcomeResponse(BaseModel):
     hall_of_fame_size: int
     fail_reason: Optional[str] = None
     player_id: str = "default"
+
+
+# --- Human study (Backend/study.py, docs/HUMAN_STUDY_PROTOCOL.md) ---------
+
+
+class StudySessionRequest(BaseModel):
+    participant_id: str
+    session_number: Literal[1, 2]
+
+
+class StudySessionResponse(BaseModel):
+    participant_id: str
+    session_number: int
+    condition: str
+    player_id: str
+
+
+class QuestionnaireRequest(BaseModel):
+    participant_id: str
+    session_number: Literal[1, 2]
+    player_id: str
+    responses: dict[str, int]
+    comment: str = Field("", max_length=2000)
+
+
+class ReplayOutcomeRequest(BaseModel):
+    genome_id: str
+    player_id: str
+    telemetry: TelemetryMetrics

@@ -46,6 +46,10 @@ damage_dealt_to_player
 hits_taken_from_player
 damage_taken_from_player
 rear_hits_taken
+elites_spawned          (how many of this archetype were elites)
+telegraphed_attacks     (charges and bomb throws started)
+attacks_dodged          (telegraphed attacks that missed)
+hits_blocked            (player hits absorbed by a shield)
 killed_by_player
 ```
 
@@ -165,8 +169,8 @@ average":
 2. **Threshold-exceeding trials** — a trial that crosses a fixed,
    game-design-meaningful boundary regardless of what the rest of the data
    looks like. `config.THRESHOLDS` (e.g. `high_enemy_count: 60` — the main
-   dungeon caps spawns at 120, so a trial spawning more than half that is
-   worth a look; `near_max_deaths: 2` — one death short of failing the
+   dungeon caps spawns at 160, so a trial spawning more than 60 is worth a
+   look; `near_max_deaths: 2` — one death short of failing the
    minimal criterion outright) — see `config.py`'s own comments for the
    full list and reasoning per threshold. `flag_threshold_exceeding`
    returns one record per crossed trial naming every threshold it hit;

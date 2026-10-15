@@ -2,7 +2,8 @@
 Player-in-the-loop adaptive evolution of enemy encounters. See
 docs/EVOLUTIONARY_DESIGN.md for the full design rationale.
 
-Only the enemy encounter evolves (density, difficulty scale, behaviour mix);
+Only the enemy encounter evolves (density, difficulty scale, tempo, elite
+rate, pack size, behaviour mix);
 the dungeon itself is fixed (config.FIXED_ENVIRONMENT), so a change in
 outcome can be attributed to the enemies. Selection is a minimal criterion:
 a design enters the player's archive if and only if the player clears it,
@@ -60,6 +61,11 @@ class AdaptiveEvolutionManager:
         filter_parents: Optional[bool] = None,
         uncertainty_band: Optional[tuple[float, float]] = None,
         std_threshold: Optional[float] = None,
+        genome_space: Optional[str] = None,
+        surrogate_kernel: Optional[str] = None,
+        play_threshold: Optional[float] = None,
+        min_damage: Optional[float] = None,
+        use_surrogate: bool = True,
         persist: bool = True,
     ) -> None:
         if not is_valid_player_id(player_id):
@@ -76,6 +82,17 @@ class AdaptiveEvolutionManager:
             raise ValueError(f"gate_uncertainty must be 'epistemic' or 'total', not {self.gate_uncertainty!r}")
         if self.bootstrap not in ("random", "default"):
             raise ValueError(f"bootstrap must be 'random' or 'default', not {self.bootstrap!r}")
+        self.space = genome_lib.get_space(genome_space)
+        # Remedies from the research paper, both off unless configured:
+        # skip uncertain candidates predicted to be failed (play_threshold)
+        # and fail trials that cost less than min_damage (a lower bound on
+        # challenge).
+        self.play_threshold = config.PLAY_THRESHOLD if play_threshold is None else play_threshold
+        self.min_damage = config.MIN_DAMAGE_TAKEN if min_damage is None else min_damage
+        self.probes_skipped = 0
+        # Without the surrogate every candidate is played (it is still
+        # trained, so its predictions can be analysed afterwards).
+        self.use_surrogate = use_surrogate
         self.persist = persist
 
         self.hall_of_fame: list[dict[str, Any]] = []
@@ -93,7 +110,10 @@ class AdaptiveEvolutionManager:
         self.llm_mutation_failures = 0
         self.bootstrap_designs_served = 0
         window = config.SURROGATE_WINDOW if surrogate_window is None else surrogate_window
-        self.surrogate = Surrogate(min_labels=config.SURROGATE_MIN_LABELS, window=window)
+        self.surrogate = Surrogate(min_labels=config.SURROGATE_MIN_LABELS, window=window, space=self.space,
+                                   kernel=surrogate_kernel)
+        self.surrogate_window = window
+        self.surrogate_kernel = self.surrogate.kernel
         self._parent_pool: Optional[list[dict[str, Any]]] = None
         self._load_state()
 
@@ -105,13 +125,18 @@ class AdaptiveEvolutionManager:
         for _ in range(config.SURROGATE_MAX_PROPOSAL_ATTEMPTS):
             candidate = self._propose_candidate()
 
-            if not self.surrogate.is_ready():
+            if not self.use_surrogate or not self.surrogate.is_ready():
                 self._hand_out(candidate)
                 return candidate, None
 
             prob, total_std, epistemic_std = self.surrogate.predict_detailed(candidate["params"])
             estimate = {"prob": prob, "std": total_std, "epistemic_std": epistemic_std}
             if self._needs_real_evaluation(prob, total_std, epistemic_std):
+                if prob < self.play_threshold:
+                    # Feasibility-biased probing: an uncertain design the
+                    # player would probably fail is not worth their time.
+                    self.probes_skipped += 1
+                    continue
                 self._hand_out(candidate)
                 return candidate, estimate
 
@@ -135,7 +160,7 @@ class AdaptiveEvolutionManager:
             self._save_state()
             return False, "unknown_genome_id"
 
-        passed, reason = self._evaluate_minimal_criterion(telemetry)
+        passed, reason = self._evaluate_minimal_criterion(telemetry, self.min_damage)
 
         if evaluator_type == "bot":
             self.bot_evaluation_count += 1
@@ -184,6 +209,24 @@ class AdaptiveEvolutionManager:
         return len(self.hall_of_fame)
 
     @property
+    def settings(self) -> dict[str, Any]:
+        """The per-player settings, saved with the player's state so they
+        survive a restart (a study condition, for instance)."""
+        return {
+            "gate_uncertainty": self.gate_uncertainty,
+            "bootstrap": self.bootstrap,
+            "surrogate_window": self.surrogate_window,
+            "filter_parents": self.filter_parents,
+            "uncertainty_band": list(self.uncertainty_band),
+            "std_threshold": self.std_threshold,
+            "genome_space": self.space.name,
+            "surrogate_kernel": self.surrogate_kernel,
+            "play_threshold": self.play_threshold,
+            "min_damage": self.min_damage,
+            "use_surrogate": self.use_surrogate,
+        }
+
+    @property
     def stats(self) -> dict[str, Any]:
         return {
             "player_id": self.player_id,
@@ -198,6 +241,12 @@ class AdaptiveEvolutionManager:
             "gate_uncertainty": self.gate_uncertainty,
             "bootstrap": self.bootstrap,
             "bootstrap_designs_served": self.bootstrap_designs_served,
+            "genome_space": self.space.name,
+            "surrogate_kernel": self.surrogate_kernel,
+            "play_threshold": self.play_threshold,
+            "min_damage": self.min_damage,
+            "probes_skipped": self.probes_skipped,
+            "use_surrogate": self.use_surrogate,
             "llm_mutation_mode": config.LLM_MUTATION_MODE,
             "llm_mutation_available": llm_mutation.is_available(),
             "llm_mutations_used": self.llm_mutations_used,
@@ -215,7 +264,7 @@ class AdaptiveEvolutionManager:
         if not self.hall_of_fame:
             # Cold start: there is no parent to mutate yet.
             if self.bootstrap == "random":
-                candidate = genome_lib.make_random_genome()
+                candidate = genome_lib.make_random_genome(self.space)
                 candidate["mutation_source"] = "bootstrap"
                 self.bootstrap_designs_served += 1
                 return candidate
@@ -224,13 +273,13 @@ class AdaptiveEvolutionManager:
         parent = random.choice(self._parents())
 
         if llm_mutation.is_available():
-            llm_child = llm_mutation.propose_mutation(parent, self.recent_outcomes)
+            llm_child = llm_mutation.propose_mutation(parent, self.recent_outcomes, self.space)
             if llm_child is not None:
                 self.llm_mutations_used += 1
                 return llm_child
             self.llm_mutation_failures += 1
 
-        child = genome_lib.mutate(parent)
+        child = genome_lib.mutate(parent, self.space)
         child["mutation_source"] = "random"
         self.random_mutations_used += 1
         return child
@@ -284,7 +333,7 @@ class AdaptiveEvolutionManager:
     # --- Minimal criterion ------------------------------------------------
 
     @staticmethod
-    def _evaluate_minimal_criterion(telemetry: dict[str, Any]) -> tuple[bool, Optional[str]]:
+    def _evaluate_minimal_criterion(telemetry: dict[str, Any], min_damage: float = 0.0) -> tuple[bool, Optional[str]]:
         """Order matters here. `quit_early` and "timed out without reaching
         the exit" are distinct failure signals from "played it out and simply
         didn't make it" — checking `exit_reached` unconditionally first would
@@ -311,6 +360,9 @@ class AdaptiveEvolutionManager:
         if telemetry.get("deaths_retries", 0) > config.MAX_DEATHS_ALLOWED:
             return False, "too_many_deaths"
 
+        if min_damage > 0 and telemetry.get("damage_taken", 0) < min_damage:
+            return False, "too_easy"
+
         return True, None
 
     # --- Persistence -------------------------------------------------------
@@ -334,6 +386,11 @@ class AdaptiveEvolutionManager:
             self.random_mutations_used = state.get("random_mutations_used", 0)
             self.llm_mutation_failures = state.get("llm_mutation_failures", 0)
             self.bootstrap_designs_served = state.get("bootstrap_designs_served", 0)
+            self.probes_skipped = state.get("probes_skipped", 0)
+            # Designs saved by the four-archetype version get the new genes
+            # at their neutral values.
+            for g in self.hall_of_fame + list(self.pending.values()):
+                g["params"] = genome_lib.complete_params(g["params"])
             self.surrogate.load_state(state.get("surrogate", {}))
         except (json.JSONDecodeError, OSError):
             self.hall_of_fame = []
@@ -351,6 +408,7 @@ class AdaptiveEvolutionManager:
             json.dump(
                 {
                     "player_id": self.player_id,
+                    "settings": self.settings,
                     "hall_of_fame": self.hall_of_fame,
                     "pending": self.pending,
                     "auto_accepted_count": self.auto_accepted_count,
@@ -362,6 +420,7 @@ class AdaptiveEvolutionManager:
                     "random_mutations_used": self.random_mutations_used,
                     "llm_mutation_failures": self.llm_mutation_failures,
                     "bootstrap_designs_served": self.bootstrap_designs_served,
+                    "probes_skipped": self.probes_skipped,
                     "surrogate": self.surrogate.state_dict(),
                 },
                 f,
@@ -378,15 +437,36 @@ class AdaptiveEvolutionManager:
             f.write(json.dumps(record) + "\n")
 
 
+def saved_settings(player_id: str) -> dict[str, Any]:
+    """Settings stored with a player's state, or {} if there are none."""
+    path = player_state_file(player_id)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            settings = json.load(f).get("settings", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(settings, dict):
+        return {}
+    allowed = {"gate_uncertainty", "bootstrap", "surrogate_window", "filter_parents", "uncertainty_band",
+               "std_threshold", "genome_space", "surrogate_kernel", "play_threshold", "min_damage", "use_surrogate"}
+    settings = {k: v for k, v in settings.items() if k in allowed}
+    if "uncertainty_band" in settings:
+        settings["uncertainty_band"] = tuple(settings["uncertainty_band"])
+    return settings
+
+
 class PlayerRegistry:
-    """One AdaptiveEvolutionManager per player id, created on first use."""
+    """One AdaptiveEvolutionManager per player id, created on first use with
+    the settings saved for that player (if any), else the given settings,
+    else the defaults from config."""
 
     def __init__(self) -> None:
         self._managers: dict[str, AdaptiveEvolutionManager] = {}
 
-    def get(self, player_id: str) -> AdaptiveEvolutionManager:
+    def get(self, player_id: str, settings: Optional[dict[str, Any]] = None) -> AdaptiveEvolutionManager:
         if player_id not in self._managers:
-            self._managers[player_id] = AdaptiveEvolutionManager(player_id)
+            chosen = saved_settings(player_id) or (settings or {})
+            self._managers[player_id] = AdaptiveEvolutionManager(player_id, **chosen)
         return self._managers[player_id]
 
     @staticmethod

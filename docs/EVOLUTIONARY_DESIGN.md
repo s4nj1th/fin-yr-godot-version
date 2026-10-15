@@ -40,13 +40,23 @@ defeats the purpose of evolution**, because the environment keeps changing
 under the search. We agree: if the map changes, a failed trial cannot be
 attributed to the enemies. So only the enemies evolve.
 
-A **genome** (`Backend/genome.py`) has three evolved genes:
+A **genome** (`Backend/genome.py`) describes one enemy encounter with twelve
+numbers — five scalar genes and a mix over seven archetypes:
 
 | Gene | Range | Effect in the game |
 |---|---|---|
-| `enemy_density` | 0 – 0.5 | share of rooms that receive an enemy |
+| `enemy_density` | 0 – 0.5 | share of rooms that hold a pack of enemies |
 | `enemy_difficulty_scale` | 0.6 – 1.6 | multiplier on every enemy's HP and attack |
-| `enemy_behavior_mix` | weights summing to 1 | how often each archetype spawns (`melee_chaser`, `melee_hit_run`, `ranged_kite`, `ranged_strafe`) |
+| `enemy_tempo` | 0.75 – 1.5 | faster movement; shorter wind-ups, cooldowns and stuns |
+| `elite_rate` | 0 – 0.4 | chance that an enemy is an elite (1.5× HP, 1.25× attack, enrages at half health) |
+| `pack_size` | 1 – 2.5 | expected enemies per pack (integer part, plus one with probability = fractional part) |
+| `enemy_behavior_mix` | 7 weights summing to 1 | how often each archetype spawns: `melee_chaser`, `melee_hit_run`, `ranged_kite`, `ranged_strafe`, `melee_charger`, `ranged_bomber`, `melee_shield` ([ENEMY_AI.md](ENEMY_AI.md)) |
+
+`GENOME_SPACE=legacy` evolves only the original six genes (density, scale
+and a mix over the first four archetypes) and holds tempo 1, elite rate 0,
+pack size 1 — the space of the previous version, kept for comparison.
+Designs saved by the four-archetype version are completed with these
+neutral values when loaded.
 
 Everything else is **fixed** (`config.FIXED_ENVIRONMENT`) and sent unchanged
 with every genome, so the client builds the same dungeon every trial:
@@ -97,7 +107,9 @@ A trial passes if and only if, checked in this order: the player did not
 quit; reached the exit; took at least 15 s; and died at most 3 times
 (`config.py`). Each failure reason is logged separately
 (`quit_early`, `too_slow_abandoned`, `did_not_reach_exit`,
-`too_fast_trivial`, `too_many_deaths`).
+`too_fast_trivial`, `too_many_deaths`). An optional lower bound,
+`MIN_DAMAGE_TAKEN` (off by default), also fails a cleared trial that cost less
+damage than that (`too_easy`).
 
 ### Mutation
 
@@ -110,7 +122,9 @@ mix renormalized.
 
 `Backend/surrogate.py` fits a Gaussian-process regressor (constant × RBF +
 white-noise kernel, scikit-learn) to the player's played pass/fail outcomes,
-once there are at least 5 labels of both classes.
+once there are at least 5 labels of both classes. `SURROGATE_KERNEL=ard`
+gives every gene its own length scale; in the simulation it did not help
+in the twelve-gene space, so the shared length scale is the default.
 
 **Why the gate uses epistemic uncertainty.** The GP's predictive variance is
 exactly the sum of two parts: *epistemic* variance (what more data would
@@ -119,18 +133,25 @@ player's limit). The original version gated on the total. That fails in
 practice: the gate sends the hardest-to-predict designs to the player, those
 outcomes are the noisiest, the fitted noise grows, and once its square root
 passes the 0.25 threshold the total-uncertainty gate can never auto-decide
-again. In the simulation study (50 runs per condition) this happened in 94%
-of the intermediate player's runs; with the original settings the surrogate
-decided only 15 designs in 100 playthroughs. Gating on the epistemic part
-(`SURROGATE_GATE_UNCERTAINTY=epistemic`, the default) gave an eight-fold
-larger archive for the same playthroughs, with archive contamination not
-significantly different from playing everything. `total` remains available for
-comparison.
+again. In the simulation study (50 runs per condition, intermediate player)
+the fitted noise ended above the threshold in 86% of the runs gated on
+epistemic uncertainty — where a total gate would decide only 2% of designs —
+and runs gated on total uncertainty made a median of 79 auto-decisions per
+100 playthroughs, but fewer than ten in 8 of 49 runs. Gating on the
+epistemic part (`SURROGATE_GATE_UNCERTAINTY=epistemic`, the default) gave an
+archive of 711 designs against 88 without a surrogate (8.1×) and 371 with
+the total gate, deciding held-out designs with 94% accuracy; archive
+contamination rose slightly, from 5.5% to 8.0%. `total` remains available
+for comparison.
 
 **The trade-off to know about.** Because the gate plays exactly the designs
 the surrogate cannot predict, those designs sit near the player's limit: in
-the simulation the intermediate player failed 34% of played designs, against
+the simulation the intermediate player failed 31% of played designs, against
 12% when every design is played. This is the price of learning fast.
+`PLAY_THRESHOLD=0.5` (*feasibility-biased probing*, off by default) skips
+uncertain designs the surrogate expects the player to fail; it lowered the
+played failure rate from 29% to 24% and, because the skipped attempts go to
+silent decisions instead, enlarged the archive (727 → 978 designs).
 
 **Honest limitation**: a GP *classifier* would give better-calibrated
 probabilities for binary labels; the regressor on {0, 1} labels is a
@@ -143,8 +164,14 @@ Each player has their own manager — archive, surrogate, counters — saved in
 (`GameManager.PlayerId`, or `--player=NAME`); every endpoint takes a
 `player_id` query parameter (default `default`). Designs evolved for one
 player do not suit another (in the simulation, designs evolved for an expert
-were failed 56% of the time by a novice), so separate archives are what
-makes the adaptation personal.
+were failed 59% of the time by a novice, against 10% for the novice's own),
+so separate archives are what makes the adaptation personal. Note that the
+pass/fail criterion personalizes *how hard* the encounters are, not *what
+they consist of*: two simulated players who differ only in how well they
+handle telegraphed attacks evolved archives with the same archetype mix.
+
+Each player's settings (gate, kernel, remedies, `use_surrogate`) are saved
+with their state, so a study condition survives a restart.
 
 The scripted bot plays as player `bot` by default, so **bot trials never
 train a human player's surrogate**. Trials still carry
@@ -161,7 +188,7 @@ clearable stay in it. `SURROGATE_WINDOW=N` fits the surrogate on the last N
 outcomes only, and `FILTER_PARENTS_BY_SURROGATE=1` then draws parents only
 from archived designs it still predicts the player can clear. In the
 simulation (window 30) this lowered the played failure rate after a skill
-drop from 68% to 44%, but did not clean the archive. Both are off by default.
+drop from 63% to 39%, but did not clean the archive. Both are off by default.
 
 ## LLM-guided mutation — optional, off by default, not load-bearing
 
@@ -175,10 +202,9 @@ mutated design as JSON.
 - The reply is untrusted: parsed defensively, clamped to bounds, environment
   fields ignored, mix renormalized; any failure falls back to Gaussian
   mutation. Uses and failures are counted in `/api/stats`.
-- **Measured effect**: in a 5-seed pilot with a local 4-billion-parameter
-  model, LLM offspring passed 83% of the time against 90% for Gaussian
-  mutation — no detectable difference. (Before the review, with a prompt that
-  also exposed the map genes, it did significantly worse: 58% against 80%.)
+- **Measured effect**: in a 10-seed pilot with a local 4-billion-parameter
+  model in the twelve-gene space, LLM offspring passed 83% of the time
+  against 86% for Gaussian mutation — no detectable difference (p = 0.57).
   It stays an ablation arm.
 
 ## Scripted bot evaluator
@@ -186,7 +212,9 @@ mutated design as JSON.
 `Scripts/AI/BotPlayerPolicy.cs` can drive the player instead of the keyboard
 (`--autoplay`), through the same game code and the same API calls as a human.
 `AutoplayTimeScale` speeds up the game clock; `AutoplayMaxTrials` makes the
-process quit after N trials.
+process quit after N trials; `--bot-dodge=Q` makes it step out of telegraphed
+attacks with probability Q. Headless runs with `--fixed-fps 60` play as fast
+as the machine allows, with a fixed frame time.
 
 **Honest limitation**: the bot is deliberately simple — breadth-first search
 straight to the exit, backing away from the nearest enemy below 30% health.
@@ -202,10 +230,32 @@ the exit, pressing R (quit), or the 240 s timeout without reaching the exit.
 `_evaluate_minimal_criterion` keeps them apart (`quit_early` vs
 `too_slow_abandoned`).
 
+## The simulated player
+
+`Backend/simulated_player.py` is the oracle the paper's experiments use. Its
+damage model is measured in the game: `tools/run_duels.py` plays 13,440
+duels (the scripted `FighterBotPolicy` against packs of each archetype in the
+duel arena, over scale, tempo, elite status, pack size and reaction skill)
+and writes `Backend/duel_table.json`, which the simulator interpolates. It
+reproduces held-out duels with R² = 0.98, and the design threat it predicts
+ranks designs as the real dungeon does for the exit bot (Spearman ρ = 0.79
+over 160 trials, `tools/validate_simulator.py`). A simulated player has a
+reaction skill `q` and a damage factor `kappa` calibrated so it clears a
+given share of random designs (`SKILL_PROFILES`).
+
+## Human study
+
+`--study` runs one session of the planned within-subjects study (consent,
+briefing, 30 minutes of play, a replay block, a questionnaire); the backend
+assigns the counterbalanced condition. See
+[HUMAN_STUDY_PROTOCOL.md](HUMAN_STUDY_PROTOCOL.md).
+
 ## Scope boundaries
 
 - Parameter evolution over a fixed generator and a fixed map, by design.
 - A pass/fail archive, not a quality-diversity grid; the criterion bounds
-  difficulty only from above, so archives contain many comfortable designs.
-- All quantitative results so far come from the simulated player; a human
-  study (protocol in the paper, Sec. VI) is the next step.
+  difficulty only from above, so archives contain many comfortable designs
+  (`MIN_DAMAGE_TAKEN` adds a lower bound).
+- All quantitative results so far come from the simulated player; the
+  human study ([protocol](HUMAN_STUDY_PROTOCOL.md)) is implemented and
+  tested with the bot, and is the next step.

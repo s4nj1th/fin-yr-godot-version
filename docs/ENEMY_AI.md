@@ -1,6 +1,6 @@
 # Enemy AI and Grid System
 
-This document describes the enemy implementation in the current Godot C# branch. The authoritative behavior lives in [Scripts/Entities/EnemyController.cs](../Scripts/Entities/EnemyController.cs). The test harness is [Scripts/Core/EnemyAiTestScene.cs](../Scripts/Core/EnemyAiTestScene.cs), and the large-map spawner is [Scripts/Core/GameManager.cs](../Scripts/Core/GameManager.cs).
+This document describes the enemy implementation in the current Godot C# branch. The authoritative behavior lives in [Scripts/Entities/EnemyController.cs](../Scripts/Entities/EnemyController.cs); every combat number comes from the archetype catalog in [Scripts/AI/EnemyArchetypes.cs](../Scripts/AI/EnemyArchetypes.cs), and the telegraph geometry from [Scripts/AI/AttackGeometry.cs](../Scripts/AI/AttackGeometry.cs) (both engine-free and unit-tested). Looks and animation are in [Scripts/Entities/EnemyVisuals.cs](../Scripts/Entities/EnemyVisuals.cs) and [Scripts/Entities/TelegraphFx.cs](../Scripts/Entities/TelegraphFx.cs). The test harness is [Scripts/Core/EnemyAiTestScene.cs](../Scripts/Core/EnemyAiTestScene.cs), and the large-map spawner is [Scripts/Core/GameManager.cs](../Scripts/Core/GameManager.cs).
 
 ## 1. Two Grids, Two Jobs
 
@@ -48,23 +48,17 @@ Tile value `0` is a wall. Every other tile value is considered traversable by th
 
 There is no explicit check for another enemy occupying a candidate cell. There is also no path reservation, diagonal movement, corner cutting, or route history. Two enemies can therefore select the same cell, and a greedy enemy can stop when every immediate neighbor is no closer to its target even if a route exists around an obstacle.
 
-## 4. Enemy Tick and Movement Rate
+## 4. Enemy Tick, Movement Rate and Attack Timing
 
-`EnemyController.Tick` is called once per frame by `GameManager` or `EnemyAiTestScene`. The controller does not move every frame. It accumulates elapsed time and acts when this delay has passed:
+`EnemyController.Tick` is called once per frame by `GameManager` or `EnemyAiTestScene`. Every frame it updates perception, the visuals and the attack state machine (section 8). Movement happens on a timer:
 
 ```text
 stepDelay = max(0.25, 1.0 / max(Stats.Speed, 0.5))
 ```
 
-When the timer fires, the controller:
+When the timer fires and the enemy is not winding up or stunned, it calls `ChooseNextStep`, adds the returned cardinal direction to `GridPos`, turns to face it, and glides its 3D position to the new tile (a short tween; the grid position is the source of truth). Elite enemies below half health run every timer 1.3 times faster.
 
-1. Decreases the attack cooldown.
-2. Calls `ChooseNextStep`.
-3. Adds the returned cardinal direction to `GridPos`, if non-zero.
-4. Updates the 3D position.
-5. Rebuilds and redraws the 8x8 debug board.
-
-The player uses the same discrete grid idea. In the AI test scene, player input is throttled to a `0.14` second movement delay; in the main scene, it is throttled to `0.18` seconds. The player and enemy can therefore be compared as turn-like grid actors even though both are driven from the frame loop.
+The player uses the same discrete grid idea. In the AI test scene, player input is throttled to a `0.14` second movement delay; in the main scene, it is throttled to `0.18` seconds.
 
 ## 5. Local 8x8 Debug Board
 
@@ -108,53 +102,59 @@ Only these directions are considered, in this order:
 
 This is a local greedy heuristic. It works well in open rooms and straight corridors, but it does not understand global routes. Around a wall, the best immediate direction may be a sideways move that temporarily keeps the same distance or increases it. Because such a move is rejected, the enemy can stall instead of navigating around the obstacle.
 
-## 7. Behavior Types
+## 7. Archetypes
 
-Behavior changes movement and post-attack positioning. Stats are supplied separately through `EnemyClassDefinition` and `EnemyStats`.
+Seven archetypes (`EnemyArchetypes.All`, in the backend's `BEHAVIOR_TYPES` order). The first four keep the original game's hit points, attack, defence, speed, reach and 0.85 s cooldown; the wind-ups are new.
 
-### `melee_chaser` and `ambush`
+| Behaviour key | Name | Attack | Wind-up / cooldown (s) | Movement |
+|---|---|---|---|---|
+| `melee_chaser` | Brute | melee strike, reach 2 | 0.30 / 0.85 | greedy approach |
+| `melee_hit_run` | Skirmisher | melee strike, reach 2 | 0.20 / 0.85 | hovers just outside reach; retreats 2 steps after striking |
+| `ranged_kite` | Archer | tracking shot, range 5, needs line of sight | 0.35 / 0.85 | holds distance 3–5; retreats 2 steps after firing |
+| `ranged_strafe` | Sentinel | tracking shot, range 5, needs line of sight | 0.35 / 0.85 | holds distance 3–6; strafes 2 steps and switches sides after firing |
+| `melee_charger` | Charger | **telegraphed dash** up to 6 tiles along its row/column; hits anything on the line | 0.70 / 2.40, then stunned 1.2 s (takes 1.5× damage) | lines up on the player's row or column, then closes in |
+| `ranged_bomber` | Bomber | **telegraphed bomb** on a 3×3 area, range 7, aimed where a moving player is heading | 0.90 / 2.20 | holds distance 4–7; side-steps after throwing |
+| `melee_shield` | Shieldbearer | shield bash, reach 1, only facing the player | 0.45 / 1.30 | greedy approach; **turns 90° per 0.5 s**; hits from its front arc do 25% damage |
 
-These behaviors call `FindBestStep` with `preferCloser: true`. They continually select the walkable cardinal step that reduces Manhattan distance. In the main dungeon, `ambush` is assigned to the brute definition; it currently shares the same movement rule as `melee_chaser`.
+`patrol` (no target) and `ambush` (same as the chaser) remain for the AI test scenes.
 
-### `melee_hit_run`
+### Encounter modifiers (evolved genes)
 
-This behavior approaches while it is farther than `attackDistance + 1`. When it is close, it retreats by choosing the legal step that increases distance. After an attack it also requests two retreat steps. If no legal step improves the desired distance, it remains in place.
+`EnemyArchetypes.WithModifiers` applies the design's genes to an archetype:
 
-### `ranged_kite`
+- `enemy_difficulty_scale` multiplies hit points and attack (rounded half-to-even, as the engine does);
+- `enemy_tempo` multiplies speed and divides every wind-up, cooldown, recovery and turn time;
+- an **elite** (each enemy independently, with probability `elite_rate`) has 1.5× hit points and 1.25× attack, a gold aura and crown, and enrages below half health;
+- `pack_size` is the expected number of enemies per spawn point (`PackCount`: the integer part, plus one with probability equal to the fractional part, 1 to 3). Extra pack members take the nearest free tiles (`AttackGeometry.PackPlacement`).
 
-This behavior tries to maintain a mid-range band. It retreats below distance `3`, approaches above distance `5`, and strafes between those thresholds. After an attack it requests two retreat steps.
+## 8. The Attack State Machine
 
-### `ranged_strafe`
+Attacks are checked every frame, not only on movement steps:
 
-This behavior approaches when farther than distance `6`, retreats below distance `3`, and strafes in the middle. After an attack it takes two strafe steps and flips its strafe sign, which alternates the preferred side between attacks.
+1. **Ready.** If the cooldown has expired and the archetype's trigger holds (in reach; in range with line of sight; on a clear row/column within 6 tiles for the charger; facing the player for the shieldbearer), the enemy starts a **wind-up**. The cooldown restarts at the start of the wind-up, so it is the archetype's attack period.
+2. **Winding up.** The enemy stands still, glows and squashes as the wind-up fills. Charges and bombs also paint their target tiles on the floor (`TelegraphFx`: red for a dash line, orange for a blast); the inner square of each tile grows as time runs out. `TelegraphStarted` is raised with the tiles, which the scripted bots use to dodge.
+3. **Resolve.** Melee strikes land if the player is still in reach, shots if still in range and sight, the dash if the player is on the swept line (the charger stops in front of the player or an ally), the bomb if the player is still inside the area. A hit emits `EnemyAttackedPlayer`; every attack raises `AttackResolved(hit, telegraphed)`, and a telegraphed miss counts as a dodge in the per-archetype telemetry.
+4. **Recovering** (charger only): stunned for the recovery time, with stars over its head, taking extra damage.
 
-### `patrol`
+Damage to an enemy goes through `TakeDamage(raw, direction, attackerPos)`: mitigation by defence (floor 1), the shieldbearer's frontal block, the stunned charger's vulnerability, a hit flash and knock-back, a floating damage number, and the health bar. It returns the damage dealt and whether it was blocked, for telemetry.
 
-This is the fallback/default behavior. It does not target the player for movement. It returns the first walkable direction in the fixed direction order, so it is deterministic and currently behaves more like a simple wall-following probe than a patrol route.
+## 9. Test Scenes, Gallery, Duel Arena and Main Dungeon
 
-## 8. Attacking and Post-Attack State
+The game starts in [Main.tscn](../Main.tscn). Two sandbox scenes compare archetypes in isolation: [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn) and [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn). [Scenes/EnemyGallery.tscn](../Scenes/EnemyGallery.tscn) shows every archetype, regular and elite, with the two floor telegraphs (`-- --gallery-out=FILE.png` saves a frame).
 
-Before normal movement selection, the controller checks whether the Manhattan distance is within attack range and whether the `0.85` second cooldown has expired.
+**Duel mode** (`-- --duel-plan=PLAN.json --duel-out=OUT.jsonl`, run by `tools/run_duels.py`) puts a scripted fighter (`FighterBotPolicy`: closes in and attacks; with probability `dodge` per telegraph it steps out of the marked tiles or flanks a shieldbearer) against a pack of identical enemies in an open arena and records the damage it takes. These measurements are the simulated player's damage model (`Backend/duel_table.json`).
 
-Attack distance is calculated as follows:
+The main dungeon is built from the fixed map seed, finds the tiles marked `5` (enemy spawn), and spawns a pack at each, up to 160 enemies. Each enemy's archetype is drawn from the design's `enemy_behavior_mix` and its elite status from `elite_rate` (see [EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md)). The 8x8 debug board is disabled there for frame rate.
 
-1. Any behavior whose name starts with `ranged` uses distance `4`.
-2. Other behaviors use `Stats.AttackRange + 1`.
+## 10. Looks and Animation
 
-On attack, the controller emits `EnemyAttackedPlayer` with `Stats.Attack` and resets the cooldown. `melee_hit_run` and `ranged_kite` set a two-step retreat request. `ranged_strafe` sets a two-step strafe request and reverses its strafe direction. The actual response to the signal is owned by the scene that connected it: the isolated test scene logs the hit, while the main scene currently handles collision with the player by applying a score penalty and resetting the player position.
+Each archetype is built from primitive meshes (no external art assets) in its own colour: the Brute a horned block (red), the Skirmisher a slim figure with two blades (orange), the Archer a hooded robe with a bow (violet), the Sentinel a floating orb in a spinning ring (teal), the Charger a low ram with forward horns (magenta), the Bomber a round body with a lit fuse (lime) and the Shieldbearer a helmeted figure behind a tower shield (blue). Animations: spawn rise, idle bob, smooth steps and turning, wind-up glow and squash, lunge, projectile, lobbed bomb with explosion, hit flash and knock-back, stun stars, enrage pulse for elites, and a topple-and-shrink death with a particle burst. A health bar appears once an enemy is hurt.
 
-## 9. Test Scenes and Main Dungeon
-
-The game starts in [Main.tscn](../Main.tscn). Two sandbox scenes compare archetypes in isolation: [Scenes/MeleeAiTest.tscn](../Scenes/MeleeAiTest.tscn) (`melee_chaser` vs `melee_hit_run`, same stats) and [Scenes/RangedAiTest.tscn](../Scenes/RangedAiTest.tscn) (`ranged_kite` vs `ranged_strafe`), each in a 20x16 arena with fixed pillars.
-
-The main dungeon is built from the fixed map seed, finds the tiles marked `5` (enemy spawn), and spawns one enemy per spawn point, up to 120. Each enemy's archetype is drawn from the current design's `enemy_behavior_mix`, and its HP and attack are multiplied by the design's `enemy_difficulty_scale` (see [EVOLUTIONARY_DESIGN.md](EVOLUTIONARY_DESIGN.md)). The 8x8 debug board is disabled there for frame rate.
-
-## 10. Current Limitations and Extension Points
+## 11. Current Limitations and Extension Points
 
 The baseline movement described above is intentionally lightweight and easy to inspect. Enemies that receive a stealth countermeasure order already use line of sight within their vision range (`GridLineOfSight`) and breadth-first search (`GridPathfinder`) to search the player's last known position ([ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md)). Remaining upgrades:
 
 1. Use BFS or A\* for ordinary chasing too, when an obstacle blocks direct progress.
-2. Add occupancy checks so enemies do not select the same cell.
-3. Give enemies a facing direction, so a rear hit can be judged from the enemy's side rather than the player's heading.
+2. Add occupancy checks so enemies do not select the same cell during ordinary movement (dashes and pack placement already respect occupancy).
+3. Enemies now have a facing (for animation and the shieldbearer's block), but the director's rear-hit signal still uses the player's heading; switching it to the enemy's facing would make that signal exact.
 4. Make the debug board dimensions and encoding data-driven instead of hard-coded to 8x8 and values `0` through `3`.
-5. Expose the current behavior phase and selected direction in the test UI.

@@ -2,3 +2,5 @@
 matplotlib==3.11.2
 # the research paper's analysis script (significance tests)
 scipy==1.18.1
+# the human study's planned analysis (tools/analyze_study.py)
+statsmodels==0.15.0

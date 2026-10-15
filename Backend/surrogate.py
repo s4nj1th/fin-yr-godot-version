@@ -22,34 +22,40 @@ import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
 
-from config import BEHAVIOR_TYPES, GENOME_BOUNDS
+import config
+from genome import GenomeSpace, complete_params, get_space
 
-FEATURE_KEYS = list(GENOME_BOUNDS.keys())
 
-
-def genome_to_features(params: dict[str, Any]) -> list[float]:
+def genome_to_features(params: dict[str, Any], space: Optional[GenomeSpace] = None) -> list[float]:
     """Flattens+normalizes a genome's params dict into a GP-friendly feature
-    vector (each scalar gene scaled to [0, 1] by its configured bounds, plus
-    the raw behavior-mix weights, which are already normalized to sum to 1)."""
+    vector: each evolved scalar gene scaled to [0, 1] by its bounds, plus the
+    behavior-mix weights of the evolved archetypes (already in [0, 1])."""
+    space = space or get_space()
+    params = complete_params(params)
     features = []
-    for key in FEATURE_KEYS:
-        lo, hi = GENOME_BOUNDS[key]
+    for key in space.scalars:
+        lo, hi = space.bounds[key]
         span = (hi - lo) or 1.0
         features.append((params[key] - lo) / span)
 
-    mix = params.get("enemy_behavior_mix", {})
-    for behavior in BEHAVIOR_TYPES:
+    mix = params["enemy_behavior_mix"]
+    for behavior in space.behaviors:
         features.append(mix.get(behavior, 0.0))
 
     return features
 
 
 class Surrogate:
-    def __init__(self, min_labels: int, window: int = 0) -> None:
+    def __init__(self, min_labels: int, window: int = 0, space: Optional[GenomeSpace] = None,
+                 kernel: Optional[str] = None) -> None:
         self.min_labels = min_labels
         # 0 = fit on every real outcome; N > 0 = fit on only the most recent N,
         # so the model can follow a player whose skill changes.
         self.window = window
+        self.space = space or get_space()
+        self.kernel = (kernel or config.SURROGATE_KERNEL).lower()
+        if self.kernel not in ("isotropic", "ard"):
+            raise ValueError(f"kernel must be 'isotropic' or 'ard', not {self.kernel!r}")
         self.x_train: list[list[float]] = []
         self.y_train: list[float] = []
         self._model: Optional[GaussianProcessRegressor] = None
@@ -63,7 +69,7 @@ class Surrogate:
         calibration error compound instead of being checked against ground
         truth (real playtelemetry is sparse for a single-player game, so this
         matters more than it would with a large training set)."""
-        self.x_train.append(genome_to_features(params))
+        self.x_train.append(genome_to_features(params, self.space))
         self.y_train.append(1.0 if passed else 0.0)
         self._retrain()
 
@@ -83,7 +89,7 @@ class Surrogate:
         if self._model is None:
             return 0.5, 1.0, 1.0  # maximally uncertain fallback before the model is trained
 
-        features = np.array([genome_to_features(params)])
+        features = np.array([genome_to_features(params, self.space)])
         mean, std = self._model.predict(features, return_std=True)
         prob = float(np.clip(mean[0], 0.0, 1.0))
         total_std = float(std[0])
@@ -94,7 +100,7 @@ class Surrogate:
         """Unclipped posterior means for several genomes at once."""
         if self._model is None:
             return np.full(len(params_list), 0.5)
-        return self._model.predict(np.array([genome_to_features(p) for p in params_list]))
+        return self._model.predict(np.array([genome_to_features(p, self.space) for p in params_list]))
 
     @property
     def noise_level(self) -> float:
@@ -113,7 +119,8 @@ class Surrogate:
             self._model = None
             return
 
-        kernel = ConstantKernel(1.0, (1e-2, 1e2)) * RBF(length_scale=1.0, length_scale_bounds=(1e-2, 1e2)) \
+        length_scale = np.ones(self.space.dimension) if self.kernel == "ard" else 1.0
+        kernel = ConstantKernel(1.0, (1e-2, 1e2)) * RBF(length_scale=length_scale, length_scale_bounds=(1e-2, 1e2)) \
             + WhiteKernel(noise_level=0.1, noise_level_bounds=(1e-4, 1.0))
 
         model = GaussianProcessRegressor(kernel=kernel, normalize_y=False, n_restarts_optimizer=2, alpha=1e-6)
@@ -126,7 +133,7 @@ class Surrogate:
     def load_state(self, state: dict[str, Any]) -> None:
         x_train = state.get("x_train", [])
         y_train = state.get("y_train", [])
-        n_features = len(FEATURE_KEYS) + len(BEHAVIOR_TYPES)
+        n_features = self.space.dimension
         # Training data saved with a different genome layout cannot be reused.
         if len(x_train) != len(y_train) or any(len(x) != n_features for x in x_train):
             x_train, y_train = [], []

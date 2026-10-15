@@ -50,37 +50,62 @@ def _extract_json_object(text: str) -> Optional[dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _enemy_genes(params: dict[str, Any]) -> dict[str, Any]:
+GENE_DESCRIPTIONS = {
+    "enemy_density": "share of rooms that hold a pack of enemies",
+    "enemy_difficulty_scale": "multiplier on every enemy's hit points and attack",
+    "enemy_tempo": "enemy speed: faster movement and shorter wind-ups and cooldowns",
+    "elite_rate": "chance that an enemy is an elite (tougher, hits harder, enrages at half health)",
+    "pack_size": "expected number of enemies per pack",
+}
+BEHAVIOR_DESCRIPTIONS = {
+    "melee_chaser": "walks straight at the player and strikes",
+    "melee_hit_run": "strikes, then backs off",
+    "ranged_kite": "shoots and keeps its distance",
+    "ranged_strafe": "shoots while side-stepping",
+    "melee_charger": "telegraphed dash along a line; dodgeable, then stunned",
+    "ranged_bomber": "lobs a bomb at a telegraphed 3x3 area; dodgeable",
+    "melee_shield": "blocks most damage from the front; must be flanked",
+}
+
+
+def _enemy_genes(params: dict[str, Any], space: Optional[genome_lib.GenomeSpace] = None) -> dict[str, Any]:
     """Only the evolved genes; the fixed environment is not the LLM's to change."""
-    keys = list(config.GENOME_BOUNDS.keys()) + ["enemy_behavior_mix"]
-    return {key: params[key] for key in keys if key in params}
+    space = space or genome_lib.get_space()
+    params = genome_lib.complete_params(params)
+    genes: dict[str, Any] = {key: round(params[key], 3) for key in space.scalars}
+    genes["enemy_behavior_mix"] = {b: round(params["enemy_behavior_mix"].get(b, 0.0), 3) for b in space.behaviors}
+    return genes
 
 
-def _build_prompt(parent_params: dict[str, Any], recent_outcomes: list[dict[str, Any]]) -> str:
-    bounds_desc = "\n".join(f"  - {key}: between {lo} and {hi}" for key, (lo, hi) in config.GENOME_BOUNDS.items())
-    behavior_desc = ", ".join(config.BEHAVIOR_TYPES)
+def _build_prompt(parent_params: dict[str, Any], recent_outcomes: list[dict[str, Any]],
+                  space: Optional[genome_lib.GenomeSpace] = None) -> str:
+    space = space or genome_lib.get_space()
+    bounds_desc = "\n".join(f"  - {key} ({GENE_DESCRIPTIONS[key]}): between {lo} and {hi}"
+                            for key, (lo, hi) in space.bounds.items())
+    behavior_desc = "\n".join(f"  - {b}: {BEHAVIOR_DESCRIPTIONS[b]}" for b in space.behaviors)
 
     history = recent_outcomes[-config.LLM_MUTATION_HISTORY_SIZE :]
     if history:
         history_lines = []
         for outcome in history:
             status = "PASSED" if outcome["passed"] else f"FAILED ({outcome.get('fail_reason', 'unknown')})"
-            history_lines.append(f"  - {status}: {json.dumps(_enemy_genes(outcome['params']))}")
+            history_lines.append(f"  - {status}: {json.dumps(_enemy_genes(outcome['params'], space))}")
         history_desc = "\n".join(history_lines)
     else:
         history_desc = "  (no prior real playthroughs yet)"
 
-    param_keys = ", ".join(config.GENOME_BOUNDS.keys())
+    param_keys = ", ".join(space.scalars)
 
-    return f"""You are proposing one mutated genome for a procedural dungeon-crawler game, as part of an evolutionary algorithm. A genome describes the enemy encounter in a fixed dungeon: how many enemies there are (enemy_density), how strong they are (enemy_difficulty_scale scales their hit points and attack), and the mix of four enemy behaviours. The dungeon itself never changes. A real human player will actually play whatever genome you propose next, so make a genuinely targeted change based on the outcome history below — not a random guess.
+    return f"""You are proposing one mutated genome for a procedural dungeon-crawler game, as part of an evolutionary algorithm. A genome describes the enemy encounter in a fixed dungeon: the numeric genes below and the mix of {len(space.behaviors)} enemy behaviours. The dungeon itself never changes. A real human player will actually play whatever genome you propose next, so make a genuinely targeted change based on the outcome history below — not a random guess.
 
 Current (parent) genome parameters:
-{json.dumps(_enemy_genes(parent_params), indent=2)}
+{json.dumps(_enemy_genes(parent_params, space), indent=2)}
 
 Parameter bounds (stay within these):
 {bounds_desc}
 
-enemy_behavior_mix keys must be exactly: {behavior_desc} (relative weights, need not sum to 1 — they will be renormalized).
+enemy_behavior_mix keys must be exactly these (relative weights, need not sum to 1 — they will be renormalized):
+{behavior_desc}
 
 Recent real playthrough outcomes (most recent last):
 {history_desc}
@@ -157,7 +182,8 @@ def _call_local(prompt: str) -> str:
     return data["message"]["content"]
 
 
-def propose_mutation(parent: dict[str, Any], recent_outcomes: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+def propose_mutation(parent: dict[str, Any], recent_outcomes: list[dict[str, Any]],
+                     space: Optional[genome_lib.GenomeSpace] = None) -> Optional[dict[str, Any]]:
     """Returns a full sanitized genome dict (same shape as genome_lib.mutate's
     output, tagged mutation_source="llm") on success, or None on any failure —
     the caller (AdaptiveEvolutionManager) is responsible for falling back to
@@ -165,7 +191,7 @@ def propose_mutation(parent: dict[str, Any], recent_outcomes: list[dict[str, Any
     if not is_available():
         return None
 
-    prompt = _build_prompt(parent["params"], recent_outcomes)
+    prompt = _build_prompt(parent["params"], recent_outcomes, space)
 
     try:
         if config.LLM_PROVIDER == "openai":
@@ -186,7 +212,7 @@ def propose_mutation(parent: dict[str, Any], recent_outcomes: list[dict[str, Any
         print("[llm_mutation] Could not parse JSON from LLM response, falling back to random mutation.")
         return None
 
-    sanitized_params = genome_lib.sanitize_params(parsed, parent["params"])
+    sanitized_params = genome_lib.sanitize_params(parsed, parent["params"], space)
 
     return {
         "id": genome_lib.new_genome_id(),

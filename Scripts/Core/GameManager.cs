@@ -36,7 +36,7 @@ public partial class GameManager : Node3D
 	// Tiles are GPU-instanced via MultiMesh, not one MeshInstance3D per tile —
 	// a 160x160 map is 25,600 cells; that many individual nodes/meshes/
 	// materials was the single biggest frame-rate cost in the game (worse
-	// than the 120-enemy spawn). Grouped into three MultiMeshInstance3D
+	// than a full enemy spawn). Grouped into three MultiMeshInstance3D
 	// buckets by geometry (wall / floor+corridor / taller special tiles);
 	// per-tile color still varies via MultiMesh instance color, so this
 	// keeps the existing tile palette and LightenTile's single-tile
@@ -158,6 +158,14 @@ public partial class GameManager : Node3D
 	// that many reported trials, for an unattended overnight batch run.
 	[Export] public int AutoplayMaxTrials { get; set; }
 	private int _autoplayTrialsCompleted;
+	// Probability that the scripted player reacts to a telegraphed attack
+	// (steps out of a charge line or blast area, flanks a shieldbearer).
+	// 0 = never, as the original bot; set with --bot-dodge=Q.
+	[Export] public float BotDodgeSkill { get; set; }
+	private const double BotReactionSeconds = 0.2;
+	private readonly RandomNumberGenerator _botRng = new();
+	private readonly List<(EnemyController Source, HashSet<GridPoint> Cells, double ActiveAt)> _botDangers = new();
+	private readonly Dictionary<EnemyController, bool> _botFlankDecisions = new();
 
 	// Whose archive the backend evolves designs for: each player gets their
 	// own archive and surrogate (Backend/adaptive_evolution.py). Set here, or
@@ -231,6 +239,36 @@ public partial class GameManager : Node3D
 			{
 				PlayerId = arg.Substring("--player=".Length);
 			}
+			else if (arg.StartsWith("--bot-dodge=", StringComparison.Ordinal)
+				&& float.TryParse(arg.AsSpan("--bot-dodge=".Length), System.Globalization.NumberStyles.Float,
+					System.Globalization.CultureInfo.InvariantCulture, out float dodge))
+			{
+				BotDodgeSkill = Mathf.Clamp(dodge, 0f, 1f);
+			}
+			else if (arg.StartsWith("--backend-url=", StringComparison.Ordinal))
+			{
+				_apiClient.BaseUrl = arg.Substring("--backend-url=".Length).TrimEnd('/');
+			}
+			else if (arg.StartsWith("--duel-plan=", StringComparison.Ordinal))
+			{
+				_duelPlanPath = arg.Substring("--duel-plan=".Length);
+			}
+			else if (arg.StartsWith("--duel-out=", StringComparison.Ordinal))
+			{
+				_duelOutPath = arg.Substring("--duel-out=".Length);
+			}
+		}
+
+		_botRng.Seed = 20261015;
+		if (!string.IsNullOrEmpty(_duelPlanPath))
+		{
+			StartDuelMode();
+			return;
+		}
+
+		if (SetUpStudyMode(cmdlineArgs))
+		{
+			return; // the study screens start the session
 		}
 
 		if (string.IsNullOrWhiteSpace(PlayerId))
@@ -286,12 +324,27 @@ public partial class GameManager : Node3D
 		}
 		_rKeyWasDown = rKeyDown;
 
+		if (_duelMode)
+		{
+			ProcessDuel(delta);
+			return;
+		}
+
+		if (StudyBlocksGameplay)
+		{
+			return;
+		}
+
 		if (_isFetchingGenome)
 		{
 			return;
 		}
 
 		_trialElapsedSeconds += delta;
+		if (_studyMode && !_studySessionOver)
+		{
+			_studyElapsed += delta;
+		}
 		if (_trialElapsedSeconds > MaxTrialSeconds && !_trialReported)
 		{
 			// A passive timeout is a distinct signal from a manual quit — see
@@ -476,7 +529,11 @@ public partial class GameManager : Node3D
 				EnemyBehaviorBreakdown = _behaviorTelemetry.Snapshot()
 			};
 
-			if (_backendAvailable && !string.IsNullOrEmpty(_currentGenomeId))
+			if (_currentIsReplay)
+			{
+				await ReportReplayAsync(telemetry);
+			}
+			else if (_backendAvailable && !string.IsNullOrEmpty(_currentGenomeId))
 			{
 				ReportOutcomeResponse? result = await _apiClient.ReportOutcomeAsync(new ReportOutcomeRequest
 				{
@@ -506,7 +563,15 @@ public partial class GameManager : Node3D
 				}
 			}
 
-			await RequestNextGenomeAsync();
+			if (_studyMode && !await PrepareNextStudyTrialAsync())
+			{
+				return;
+			}
+
+			if (!TryTakeReplayDesign())
+			{
+				await RequestNextGenomeAsync();
+			}
 			RegenerateDungeon();
 		}
 		catch (Exception ex)
@@ -643,8 +708,17 @@ public partial class GameManager : Node3D
 		_trialChestsOpened = 0;
 		_trialReported = false;
 		_behaviorTelemetry.Reset();
+		_botDangers.Clear();
+		_botFlankDecisions.Clear();
 
-		GenerateDungeon();
+		if (_duelMode)
+		{
+			GenerateArena();
+		}
+		else
+		{
+			GenerateDungeon();
+		}
 		BuildLevel();
 		SetupCamera();
 		SetupPlayer();
@@ -655,9 +729,20 @@ public partial class GameManager : Node3D
 		_trialTotalChests = CountTilesOfType(6);
 
 		GenomeParams p = _currentGenome.Params;
-		GD.Print($"[Dungeon] seed={seed} rooms={_rooms.Count} enemies={_enemies.Count} traps={CountTilesOfType(4)} " +
+		if (_duelMode)
+		{
+			return;
+		}
+
+		int elites = 0;
+		foreach (EnemyController enemy in _enemies)
+		{
+			elites += enemy.IsElite ? 1 : 0;
+		}
+
+		GD.Print($"[Dungeon] seed={seed} rooms={_rooms.Count} enemies={_enemies.Count} elites={elites} traps={CountTilesOfType(4)} " +
 			$"chests={_trialTotalChests} heals={CountTilesOfType(9)} | design enemy_density={p.EnemyDensity:F3} " +
-			$"difficulty_scale={p.EnemyDifficultyScale:F3}");
+			$"difficulty_scale={p.EnemyDifficultyScale:F3} tempo={p.EnemyTempo:F3} elite_rate={p.EliteRate:F3} pack_size={p.PackSize:F3}");
 	}
 
 	private void GenerateDungeon()
@@ -1240,12 +1325,21 @@ void fragment() {
 		_camera.Position = _playerMesh.Position - (forward * CameraDistance);
 	}
 
+	// The main dungeon caps spawns here (mirrored by the simulated player,
+	// Backend/simulated_player.py MAX_ENEMIES).
+	private const int MaxEnemies = 160;
+
 	private void SpawnEnemies()
 	{
 		_enemyRoot = new Node3D();
 		AddChild(_enemyRoot);
-		Vector2 worldOffset = GetGridWorldOrigin();
-		float difficultyScale = Mathf.Max(0.1f, _currentGenome.Params.EnemyDifficultyScale);
+		if (_duelMode)
+		{
+			SpawnDuelEnemies();
+			return;
+		}
+
+		GenomeParams genes = _currentGenome.Params;
 
 		var spawnPoints = new List<Vector2I>();
 		for (int y = 0; y < _mapHeight; y++)
@@ -1269,94 +1363,103 @@ void fragment() {
 				$"StealthCountermeasureActive={_adaptationDirector.StealthCountermeasureActive}");
 		}
 
-		int maxEnemies = Mathf.Min(spawnPoints.Count, 120);
+		// Each spawn point holds a pack: its size is drawn from the evolved
+		// pack_size gene, and every member independently draws its archetype
+		// from the behaviour mix and whether it is an elite.
 		int adaptedSpawnCount = 0;
-		for (int i = 0; i < maxEnemies; i++)
+		foreach (Vector2I spawnPoint in spawnPoints)
 		{
-			EnemyClassDefinition definition = CreateEnemyDefinitionForRoll(_rng.Randf(), difficultyScale);
-
-			var enemy = new EnemyController();
-			enemy.WorldOffset = worldOffset;
-			// Main dungeon spawns up to 120 enemies; the 8x8 debug board is a
-			// per-enemy AI-inspection aid meant for the 2-enemy test scenes
-			// (ShowDebugBoard stays on there) and costs ~66 mesh instances
-			// each — disabled here so frame rate doesn't collapse with a
-			// full spawn.
-			enemy.ShowDebugBoard = false;
-			enemy.Initialize(spawnPoints[i], definition.Behavior, definition);
-			enemy.Position = GridToWorld(spawnPoints[i]) + new Vector3(0, 0.4f, 0);
-			enemy.TacticalOrder = _adaptationDirector.CreateOrderForNewEnemy(_playerProfile);
-			bool isAdapted = enemy.TacticalOrder.GuardRear || enemy.TacticalOrder.SearchLastKnownPosition;
-			// Captured by value in the lambda (not the mutable loop variable)
-			// so OnEnemyAttackedPlayer can attribute the hit to the archetype
-			// that actually threw it, for the per-archetype telemetry below.
-			EnemyController spawnedEnemy = enemy;
-			enemy.EnemyAttackedPlayer += damage => OnEnemyAttackedPlayer(damage, spawnedEnemy, isAdapted);
-			_enemyRoot.AddChild(enemy);
-			_enemies.Add(enemy);
-			_behaviorTelemetry.RecordSpawn(definition.Behavior, isAdapted);
-
-			if (isAdapted)
+			int packCount = EnemyArchetypes.PackCount(genes.PackSize, _rng.Randf());
+			var tiles = new List<Vector2I> { spawnPoint };
+			foreach (GridPoint extra in AttackGeometry.PackPlacement(ToGridPoint(spawnPoint), packCount - 1, _tiles,
+				cell => IsEnemyAt(new Vector2I(cell.X, cell.Y)) || (cell.X == _playerPos.X && cell.Y == _playerPos.Y)))
 			{
-				adaptedSpawnCount++;
+				tiles.Add(new Vector2I(extra.X, extra.Y));
+			}
+
+			foreach (Vector2I tile in tiles)
+			{
+				if (_enemies.Count >= MaxEnemies)
+				{
+					break;
+				}
+
+				string behavior = EnemyArchetypes.PickBehavior(genes.EnemyBehaviorMix, _rng.Randf());
+				bool elite = EnemyArchetypes.RollElite(genes.EliteRate, _rng.Randf());
+				if (SpawnEnemy(tile, behavior, genes.EnemyDifficultyScale, genes.EnemyTempo, elite))
+				{
+					adaptedSpawnCount++;
+				}
 			}
 		}
 
 		if (adaptedSpawnCount > 0)
 		{
-			GD.Print($"[AdaptiveAI] {adaptedSpawnCount}/{maxEnemies} enemies spawned with an active tactical order this dungeon.");
+			GD.Print($"[AdaptiveAI] {adaptedSpawnCount}/{_enemies.Count} enemies spawned with an active tactical order this dungeon.");
 		}
 	}
 
-	// Which behavior gets spawned is drawn from the current genome's
-	// enemy_behavior_mix weights (Backend/genome.py); EnemyDifficultyScale
-	// (also genome-evolved) scales MaxHp/Attack on top of that. See
-	// EnemyController.IsRanged / GetAttackDistance for how behavior +
-	// AttackRange together decide movement pattern and attack distance/FX.
-	// Behavior + AttackRange together decide movement pattern and attack distance/FX
-	// (see EnemyController.IsRanged / GetAttackDistance). Which behavior gets spawned
-	// is drawn from the current genome's enemy_behavior_mix weights (Backend/genome.py);
-	// EnemyDifficultyScale (also genome-evolved) scales MaxHp/Attack on top of that.
-	private EnemyClassDefinition CreateEnemyDefinitionForRoll(float roll, float difficultyScale)
+	/// <summary>Spawns one enemy; returns whether it received an adaptive tactical order.</summary>
+	private bool SpawnEnemy(Vector2I tile, string behavior, float difficultyScale, float tempo, bool elite)
 	{
-		Dictionary<string, float> mix = _currentGenome.Params.EnemyBehaviorMix;
-		float total = 0f;
-		foreach (float weight in mix.Values)
+		ArchetypeDefinition archetype = EnemyArchetypes.WithModifiers(EnemyArchetypes.Get(behavior), difficultyScale, tempo, elite);
+		var enemy = new EnemyController
 		{
-			total += Mathf.Max(0f, weight);
-		}
+			WorldOffset = GetGridWorldOrigin(),
+			// The 8x8 AI debug board is meant for the 2-enemy test scenes and
+			// costs ~66 mesh instances per enemy.
+			ShowDebugBoard = false,
+			IsTileOccupied = IsEnemyAt
+		};
+		enemy.Initialize(tile, archetype, elite);
+		// Study sessions switch the tactical director off (see GameManager.Study.cs).
+		enemy.TacticalOrder = _studyMode ? EnemyTacticalOrder.None() : _adaptationDirector.CreateOrderForNewEnemy(_playerProfile);
+		bool isAdapted = enemy.TacticalOrder.GuardRear || enemy.TacticalOrder.SearchLastKnownPosition;
+		// Captured by value so each hit is attributed to the archetype that
+		// actually threw it, for the per-archetype telemetry.
+		EnemyController spawnedEnemy = enemy;
+		enemy.EnemyAttackedPlayer += damage => OnEnemyAttackedPlayer(damage, spawnedEnemy, isAdapted);
+		enemy.TelegraphStarted += OnEnemyTelegraphStarted;
+		enemy.AttackResolved += (source, hit, telegraphed) =>
+		{
+			_behaviorTelemetry.RecordAttackResolved(source.BehaviorType, isAdapted, hit, telegraphed);
+			_botDangers.RemoveAll(d => d.Source == source);
+		};
+		_enemyRoot.AddChild(enemy);
+		_enemies.Add(enemy);
+		_behaviorTelemetry.RecordSpawn(behavior, isAdapted, elite);
+		return isAdapted;
+	}
 
-		if (total <= 0f)
+	private bool IsEnemyAt(Vector2I tile)
+	{
+		foreach (EnemyController enemy in _enemies)
 		{
-			total = 1f;
-		}
-
-		float cumulative = 0f;
-		string chosenBehavior = "melee_chaser";
-		foreach (KeyValuePair<string, float> entry in mix)
-		{
-			cumulative += Mathf.Max(0f, entry.Value) / total;
-			if (roll <= cumulative)
+			if (enemy.CurrentHp > 0 && enemy.GridPos == tile)
 			{
-				chosenBehavior = entry.Key;
-				break;
+				return true;
 			}
 		}
 
-		return chosenBehavior switch
-		{
-			"melee_hit_run" => EnemyClassDefinition.Create("scout", "Scout", "melee_hit_run", ScaleStats(new EnemyStats { MaxHp = 18, Speed = 1.3f, Attack = 8, Defense = 1, VisionRange = 5, AttackRange = 1, Reward = 12 }, difficultyScale)),
-			"ranged_kite" => EnemyClassDefinition.Create("guardian", "Guardian", "ranged_kite", ScaleStats(new EnemyStats { MaxHp = 24, Speed = 0.8f, Attack = 10, Defense = 6, VisionRange = 6, AttackRange = 5, Reward = 15 }, difficultyScale)),
-			"ranged_strafe" => EnemyClassDefinition.Create("sentinel", "Sentinel", "ranged_strafe", ScaleStats(new EnemyStats { MaxHp = 24, Speed = 0.8f, Attack = 10, Defense = 6, VisionRange = 6, AttackRange = 5, Reward = 15 }, difficultyScale)),
-			_ => EnemyClassDefinition.Create("brute", "Brute", "melee_chaser", ScaleStats(new EnemyStats { MaxHp = 28, Speed = 0.9f, Attack = 12, Defense = 4, VisionRange = 6, AttackRange = 1, Reward = 18 }, difficultyScale)),
-		};
+		return false;
 	}
 
-	private static EnemyStats ScaleStats(EnemyStats baseStats, float difficultyScale)
+	// The scripted players react to a telegraph with probability BotDodgeSkill,
+	// rolled once per telegraph, after a human-like reaction delay.
+	private void OnEnemyTelegraphStarted(EnemyController source, IReadOnlyCollection<Vector2I> cells)
 	{
-		baseStats.MaxHp = Mathf.Max(1, Mathf.RoundToInt(baseStats.MaxHp * difficultyScale));
-		baseStats.Attack = Mathf.Max(1, Mathf.RoundToInt(baseStats.Attack * difficultyScale));
-		return baseStats;
+		if (!AutoplayEnabled || _botRng.Randf() >= BotDodgeSkill)
+		{
+			return;
+		}
+
+		var set = new HashSet<GridPoint>();
+		foreach (Vector2I cell in cells)
+		{
+			set.Add(ToGridPoint(cell));
+		}
+
+		_botDangers.Add((source, set, _trialElapsedSeconds + BotReactionSeconds));
 	}
 
 	private void HandlePlayerInput(double delta)
@@ -1426,13 +1529,62 @@ void fragment() {
 	private Vector2I GetBotMovementDirection()
 	{
 		EnemyController? nearestEnemy = FindNearestAliveEnemy(_playerPos);
-		GridPoint? threatPos = nearestEnemy != null ? ToGridPoint(nearestEnemy.GridPos) : null;
+		GridPoint player = ToGridPoint(_playerPos);
+		HashSet<GridPoint> danger = ActiveBotDangerCells();
+		FighterBotPolicy.Target? target = nearestEnemy != null
+			? new FighterBotPolicy.Target(ToGridPoint(nearestEnemy.GridPos), ToGridPoint(nearestEnemy.Facing),
+				nearestEnemy.Archetype.Pattern == AttackPattern.ShieldBash)
+			: null;
+		Func<GridPoint, bool> occupied = cell => IsEnemyAt(new Vector2I(cell.X, cell.Y));
 
-		GridPoint step = BotPlayerPolicy.DecideMove(
-			ToGridPoint(_playerPos), ToGridPoint(_exitPos), threatPos,
-			_playerCurrentHp, _playerStats.MaxHp, _tiles);
+		GridPoint step;
+		if (_duelMode)
+		{
+			bool flank = nearestEnemy != null && ShouldFlank(nearestEnemy);
+			step = FighterBotPolicy.DecideMove(player, target, danger, flank, _tiles, occupied);
+		}
+		else
+		{
+			step = danger.Contains(player) ? FighterBotPolicy.DodgeStep(player, target, danger, _tiles, occupied) : GridPoint.Zero;
+			if (step == GridPoint.Zero)
+			{
+				step = BotPlayerPolicy.DecideMove(player, ToGridPoint(_exitPos), target?.Position,
+					_playerCurrentHp, _playerStats.MaxHp, _tiles);
+			}
+		}
 
 		return new Vector2I(step.X, step.Y);
+	}
+
+	private HashSet<GridPoint> ActiveBotDangerCells()
+	{
+		var cells = new HashSet<GridPoint>();
+		foreach ((EnemyController source, HashSet<GridPoint> danger, double activeAt) in _botDangers)
+		{
+			if (activeAt <= _trialElapsedSeconds && source.CurrentHp > 0)
+			{
+				cells.UnionWith(danger);
+			}
+		}
+
+		return cells;
+	}
+
+	// Whether the fighter works around this shieldbearer: rolled once per enemy.
+	private bool ShouldFlank(EnemyController enemy)
+	{
+		if (enemy.Archetype.Pattern != AttackPattern.ShieldBash)
+		{
+			return false;
+		}
+
+		if (!_botFlankDecisions.TryGetValue(enemy, out bool flank))
+		{
+			flank = _botRng.Randf() < BotDodgeSkill;
+			_botFlankDecisions[enemy] = flank;
+		}
+
+		return flank;
 	}
 
 	private EnemyController? FindNearestAliveEnemy(Vector2I from)
@@ -1523,12 +1675,11 @@ void fragment() {
 		LogAdaptationTransitions();
 		_sinceLastAttackSeconds = 0.0;
 
-		int damage = Math.Max(1, _playerStats.Attack - target.Stats.Defense);
 		bool targetIsAdapted = target.TacticalOrder.GuardRear || target.TacticalOrder.SearchLastKnownPosition;
-		_behaviorTelemetry.RecordPlayerHitOnEnemy(target.BehaviorType, targetIsAdapted, damage, direction == AttackDirection.Rear);
-		target.TakeDamage(damage, direction);
+		EnemyController.HitResult hit = target.TakeDamage(_playerStats.Attack, direction, _playerPos);
+		_behaviorTelemetry.RecordPlayerHitOnEnemy(target.BehaviorType, targetIsAdapted, hit.Damage, direction == AttackDirection.Rear, hit.Blocked);
 
-		if (target.CurrentHp <= 0)
+		if (hit.Killed)
 		{
 			_score += target.Stats.Reward;
 			_trialEnemiesKilled++;
@@ -1611,6 +1762,14 @@ void fragment() {
 
 	private void HandlePlayerDeath()
 	{
+		if (_duelMode)
+		{
+			// Duels measure damage, so the fighter keeps fighting in place.
+			_trialDeaths++;
+			_playerCurrentHp = _playerStats.MaxHp;
+			return;
+		}
+
 		_trialDeaths++;
 		_score = Mathf.Max(0, _score - 20);
 		_playerPos = _startPos;

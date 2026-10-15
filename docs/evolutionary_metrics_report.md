@@ -6,9 +6,12 @@ What the system records and measures. Field names match the code.
 
 | Gene | Range | Meaning |
 |---|---|---|
-| `enemy_density` | 0 – 0.5 | share of rooms that receive an enemy |
+| `enemy_density` | 0 – 0.5 | share of rooms that hold a pack of enemies |
 | `enemy_difficulty_scale` | 0.6 – 1.6 | multiplier on every enemy's HP and attack |
-| `enemy_behavior_mix` | 4 weights summing to 1 | spawn share of `melee_chaser`, `melee_hit_run`, `ranged_kite`, `ranged_strafe` |
+| `enemy_tempo` | 0.75 – 1.5 | multiplier on enemy speed; divides wind-ups, cooldowns, stuns |
+| `elite_rate` | 0 – 0.4 | chance that an enemy is an elite |
+| `pack_size` | 1 – 2.5 | expected enemies per pack |
+| `enemy_behavior_mix` | 7 weights summing to 1 | spawn share of `melee_chaser`, `melee_hit_run`, `ranged_kite`, `ranged_strafe`, `melee_charger`, `ranged_bomber`, `melee_shield` |
 
 Fixed environment (not evolved, sent with every genome): 160×160 map, 280
 room attempts, trap/chest/heal densities 0.15 each, `map_seed` 123. See
@@ -28,7 +31,7 @@ room attempts, trap/chest/heal densities 0.15 each, `map_seed` 123. See
 | `exploration_percent` | share of walkable tiles revealed |
 | `exit_reached` | the player reached the exit |
 | `quit_early` | the player pressed R |
-| `enemy_behavior_breakdown` | per archetype, split into baseline and adapted enemies: `spawned`, `attacks_on_player`, `damage_dealt_to_player`, `hits_taken_from_player`, `damage_taken_from_player`, `rear_hits_taken`, `killed_by_player` |
+| `enemy_behavior_breakdown` | per archetype, split into baseline and adapted enemies: `spawned`, `elites_spawned`, `attacks_on_player`, `damage_dealt_to_player`, `telegraphed_attacks`, `attacks_dodged`, `hits_taken_from_player`, `damage_taken_from_player`, `hits_blocked`, `rear_hits_taken`, `killed_by_player` |
 
 The minimal criterion uses `quit_early`, `exit_reached`, `time_taken_sec`
 (≥ 15 s, < 240 s) and `deaths_retries` (≤ 3).
@@ -46,7 +49,9 @@ after three hits or line-of-sight breaks. They drive the `AdaptationDirector`
 `hall_of_fame_size` (archive size), `real_evaluations`, `human_evaluations`,
 `bot_evaluations`, `auto_accepted`, `auto_rejected`, `surrogate_ready`,
 `surrogate_noise_std`, `gate_uncertainty`, `bootstrap`,
-`bootstrap_designs_served`, and the LLM-mutation counters.
+`bootstrap_designs_served`, `genome_space`, `surrogate_kernel`,
+`play_threshold`, `probes_skipped`, `min_damage`, `use_surrogate`, and the
+LLM-mutation counters.
 
 ## 5. Evaluation metrics (simulation study in the research paper)
 
@@ -56,7 +61,7 @@ after three hits or line-of-sight breaks. They drive the `AdaptationDirector`
 | Archive E[fail] | mean of 1 − p*(g) over the archive: the chance a design drawn from it would be failed |
 | Played failure rate | share of played designs the player failed |
 | Challenge | median of expected damage / damage budget over the archive |
-| Diversity | mean pairwise distance between designs in the normalized 6-gene space |
+| Diversity | mean pairwise distance between the last 50 played designs in the normalized 12-gene space |
 | Surrogate quality | MSE and calibration error against p*, decision accuracy on held-out designs |
 
 Charts of a real run: `Backend/generate_metrics_plots.py --player NAME`

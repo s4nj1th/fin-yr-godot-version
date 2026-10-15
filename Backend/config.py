@@ -28,10 +28,22 @@ MAX_DEATHS_ALLOWED = 3     # more deaths than this in one trial -> fail, even if
 # Only the enemies evolve. Evolving the map at the same time would mean the
 # environment keeps changing under the search, so a failed trial could not be
 # attributed to the enemies (panel review, Phase 2). These are the evolved
-# scalar genes; the behaviour mix below is the third, grouped gene.
+# scalar genes; the behaviour mix below is the grouped gene. Scripts/AI/
+# EnemyArchetypes.cs applies them in the client:
+#   enemy_density           share of rooms that hold a pack of enemies
+#   enemy_difficulty_scale  multiplier on every enemy's hit points and attack
+#   enemy_tempo             faster movement, shorter wind-ups and cooldowns
+#   elite_rate              chance that an enemy is an elite variant
+#   pack_size               expected enemies per pack (1 to 2.5)
+# With the 114 eligible rooms of the fixed map, the most crowded design
+# (density 0.5, pack size 2.5) spawns about 143 enemies, under the client's
+# cap of 160.
 GENOME_BOUNDS = {
     "enemy_density": (0.0, 0.5),
     "enemy_difficulty_scale": (0.6, 1.6),
+    "enemy_tempo": (0.75, 1.5),
+    "elite_rate": (0.0, 0.4),
+    "pack_size": (1.0, 2.5),
 }
 
 # --- What stays fixed: the environment ---
@@ -57,8 +69,18 @@ FIXED_ENVIRONMENT = {
     "map_seed": int(os.getenv("MAP_SEED", "123")),
 }
 
-# Behavior-mix weight keys (kept separate since they're normalized as a group, not clamped individually)
-BEHAVIOR_TYPES = ["melee_chaser", "melee_hit_run", "ranged_kite", "ranged_strafe"]
+# Behavior-mix weight keys (kept separate since they're normalized as a group,
+# not clamped individually), in the order of Scripts/AI/EnemyArchetypes.cs.
+BEHAVIOR_TYPES = ["melee_chaser", "melee_hit_run", "ranged_kite", "ranged_strafe",
+                  "melee_charger", "ranged_bomber", "melee_shield"]
+
+# The original six-gene encounter space (two scalar genes, four archetypes),
+# kept as an option so the two spaces can be compared (research paper,
+# scaling study). In it the new genes stay at their neutral values.
+LEGACY_SCALAR_GENES = ["enemy_density", "enemy_difficulty_scale"]
+LEGACY_BEHAVIOR_TYPES = ["melee_chaser", "melee_hit_run", "ranged_kite", "ranged_strafe"]
+# "full" (default) or "legacy".
+GENOME_SPACE = os.getenv("GENOME_SPACE", "full").lower()
 
 # Gaussian mutation sigma per field, expressed as a fraction of that field's bound range
 MUTATION_SIGMA_FRACTION = 0.15
@@ -81,12 +103,26 @@ SURROGATE_MAX_PROPOSAL_ATTEMPTS = 25  # safety cap so a saturated surrogate can'
 # fitted noise grows as the gate does its job; with "total" the gate then
 # stops auto-deciding altogether. See the research paper, Sec. V-A.
 SURROGATE_GATE_UNCERTAINTY = os.getenv("SURROGATE_GATE_UNCERTAINTY", "epistemic").lower()
+# Length scale of the surrogate's RBF kernel: "isotropic" (one length scale
+# for every gene) or "ard" (one per gene, so genes that barely matter can be
+# ignored).
+SURROGATE_KERNEL = os.getenv("SURROGATE_KERNEL", "isotropic").lower()
 # Train the surrogate on only the most recent N real outcomes (0 = all).
 # A small window lets it track a player whose skill changes mid-session.
 SURROGATE_WINDOW = int(os.getenv("SURROGATE_WINDOW", "0"))
 # With a windowed surrogate, also skip archive parents it now predicts the
 # player would fail (only consulted once the surrogate is ready).
 FILTER_PARENTS_BY_SURROGATE = os.getenv("FILTER_PARENTS_BY_SURROGATE", "0") == "1"
+
+# --- Optional remedies (research paper, Sec. "Remedies"); both off by default ---
+# Lower bound on challenge: a cleared trial in which the player took less
+# than this much damage fails as "too_easy", so the archive does not fill up
+# with comfortable encounters. 0 = off.
+MIN_DAMAGE_TAKEN = float(os.getenv("MIN_DAMAGE_TAKEN", "0"))
+# Feasibility-biased probing: an uncertain candidate is played only if the
+# surrogate's predicted pass probability is at least this; otherwise it is
+# skipped (neither played nor archived). 0 = off.
+PLAY_THRESHOLD = float(os.getenv("PLAY_THRESHOLD", "0"))
 
 # --- Cold start ---
 # What to serve while a player's archive is still empty:
@@ -124,9 +160,9 @@ LLM_REQUEST_TIMEOUT_SECONDS = 30  # local inference on a laptop GPU is slower th
 # starting points, not load-bearing science — tune once real trial volume
 # exists. See docs/BEHAVIOR_ANALYTICS.md "Outliers and thresholds".
 THRESHOLDS = {
-    # The main dungeon caps spawns at 120 (Scripts/Core/GameManager.cs
-    # SpawnEnemies); a trial spawning more than half that is a
-    # crowded/high-density outlier worth a second look. 2 or fewer is the
+    # The main dungeon caps spawns at 160 (Scripts/Core/GameManager.cs
+    # MaxEnemies); a trial spawning more than 60 is a crowded/high-density
+    # outlier worth a second look. 2 or fewer is the
     # opposite extreme — barely any encounter happened at all.
     "high_enemy_count": 60,
     "low_enemy_count": 2,

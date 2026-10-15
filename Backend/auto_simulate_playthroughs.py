@@ -25,18 +25,18 @@ import config
 config.LLM_MUTATION_MODE = "off"  # a fast offline run should never call an LLM
 
 from adaptive_evolution import AdaptiveEvolutionManager, player_state_file  # noqa: E402
-from simulated_player import SimulatedPlayer, calibrate_kappa  # noqa: E402
+from simulated_player import SKILL_PROFILES, make_skilled_player  # noqa: E402
 
-# Share of random designs each simulated player clears (see calibrate_kappa).
-SKILLS = {"novice": 0.25, "intermediate": 0.50, "expert": 0.75}
+# Each simulated player: (share of random designs cleared, reaction skill).
+SKILLS = SKILL_PROFILES
 
 
 def run(skill: str, trials: int, player_id: str, seed: int) -> None:
-    player = SimulatedPlayer(kappa=calibrate_kappa(SKILLS[skill]))
+    player = make_skilled_player(skill)
     manager = AdaptiveEvolutionManager(player_id)
     rng = np.random.default_rng(seed)
 
-    print(f"Simulated {skill} player as '{player_id}' (kappa={player.kappa:.2f}); "
+    print(f"Simulated {skill} player as '{player_id}' (kappa={player.kappa:.2f}, reaction {player.dodge}); "
           f"gate={manager.gate_uncertainty}, bootstrap={manager.bootstrap}\n")
     failures = 0
     for trial in range(1, trials + 1):

@@ -194,8 +194,8 @@ public class TelemetryMetrics
 
 // --- Evolutionary-algorithm genome contract (Backend/models.py mirrors this) ---
 // A genome describes one enemy encounter (density, difficulty scale,
-// behaviour mix), which the Python backend evolves. The map and resource
-// fields are not evolved: the backend sends the same fixed values with every
+// tempo, elite rate, pack size, behaviour mix), which the Python backend
+// evolves. The map and resource fields are not evolved: the backend sends the same fixed values with every
 // genome (Backend/config.py FIXED_ENVIRONMENT), and the defaults below mirror
 // them so offline play builds the same dungeon. See
 // docs/EVOLUTIONARY_DESIGN.md for the design rationale.
@@ -212,14 +212,25 @@ public class GenomeParams
 	// 0 means a new random layout every trial.
 	[JsonPropertyName("map_seed")] public long MapSeed { get; set; } = 123;
 	[JsonPropertyName("enemy_density")] public float EnemyDensity { get; set; } = 0.25f;
+	// Spawn share of each archetype (DungeonCrawler.AI.EnemyArchetypes); the
+	// default is the original game's encounter, which used only three.
 	[JsonPropertyName("enemy_behavior_mix")] public Dictionary<string, float> EnemyBehaviorMix { get; set; } = new()
 	{
 		{ "melee_chaser", 0.34f },
 		{ "melee_hit_run", 0.33f },
 		{ "ranged_kite", 0.33f },
-		{ "ranged_strafe", 0.0f }
+		{ "ranged_strafe", 0.0f },
+		{ "melee_charger", 0.0f },
+		{ "ranged_bomber", 0.0f },
+		{ "melee_shield", 0.0f }
 	};
 	[JsonPropertyName("enemy_difficulty_scale")] public float EnemyDifficultyScale { get; set; } = 1.0f;
+	// Speeds up enemy movement and shortens every wind-up and cooldown.
+	[JsonPropertyName("enemy_tempo")] public float EnemyTempo { get; set; } = 1.0f;
+	// Probability that a spawned enemy is an elite (tougher, harder-hitting, enrages at half health).
+	[JsonPropertyName("elite_rate")] public float EliteRate { get; set; } = 0.0f;
+	// Expected enemies per spawn point (1 to 3; the fractional part is a probability).
+	[JsonPropertyName("pack_size")] public float PackSize { get; set; } = 1.0f;
 }
 
 public class GenomeData

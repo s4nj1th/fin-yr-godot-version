@@ -5,7 +5,8 @@ namespace DungeonCrawler.AI;
 /// <summary>
 /// Per-archetype combat counters for the current trial, keyed by
 /// <see cref="Entities.EnemyController.BehaviorType"/> (melee_chaser,
-/// melee_hit_run, ranged_kite, ranged_strafe, ...) and split into
+/// melee_hit_run, ranged_kite, ranged_strafe, melee_charger, ranged_bomber,
+/// melee_shield) and split into
 /// "baseline" vs "adapted" — whether the specific enemy involved in the
 /// event carried an active AdaptationDirector tactical order at the time.
 /// This is deliberately separate from <see cref="PlayerBehaviorTelemetry"/>:
@@ -30,6 +31,10 @@ public sealed class SituationalCombatStats
     public int DamageTakenFromPlayer;
     public int RearHitsTaken;
     public int KilledByPlayer;
+    public int ElitesSpawned;
+    public int TelegraphedAttacks;
+    public int AttacksDodged;
+    public int HitsBlocked;
 }
 
 public sealed class ArchetypeCombatStats
@@ -47,7 +52,35 @@ public sealed class EnemyBehaviorTelemetry
     /// <summary>Call at the start of every trial — this telemetry is per-trial, not lifetime.</summary>
     public void Reset() => _byBehavior.Clear();
 
-    public void RecordSpawn(string behaviorType, bool adapted) => GetOrCreate(behaviorType).For(adapted).Spawned++;
+    public void RecordSpawn(string behaviorType, bool adapted, bool elite = false)
+    {
+        SituationalCombatStats stats = GetOrCreate(behaviorType).For(adapted);
+        stats.Spawned++;
+        if (elite)
+        {
+            stats.ElitesSpawned++;
+        }
+    }
+
+    /// <summary>
+    /// A resolved enemy attack. Telegraphed attacks (charges, blasts) that
+    /// miss count as dodged; a landed hit is recorded separately by
+    /// <see cref="RecordAttackOnPlayer"/>.
+    /// </summary>
+    public void RecordAttackResolved(string behaviorType, bool adapted, bool hit, bool telegraphed)
+    {
+        if (!telegraphed)
+        {
+            return;
+        }
+
+        SituationalCombatStats stats = GetOrCreate(behaviorType).For(adapted);
+        stats.TelegraphedAttacks++;
+        if (!hit)
+        {
+            stats.AttacksDodged++;
+        }
+    }
 
     public void RecordAttackOnPlayer(string behaviorType, bool adapted, int damageDealt)
     {
@@ -56,7 +89,7 @@ public sealed class EnemyBehaviorTelemetry
         stats.DamageDealtToPlayer += damageDealt;
     }
 
-    public void RecordPlayerHitOnEnemy(string behaviorType, bool adapted, int damageDealt, bool wasRearHit)
+    public void RecordPlayerHitOnEnemy(string behaviorType, bool adapted, int damageDealt, bool wasRearHit, bool blocked = false)
     {
         SituationalCombatStats stats = GetOrCreate(behaviorType).For(adapted);
         stats.HitsTakenFromPlayer++;
@@ -64,6 +97,11 @@ public sealed class EnemyBehaviorTelemetry
         if (wasRearHit)
         {
             stats.RearHitsTaken++;
+        }
+
+        if (blocked)
+        {
+            stats.HitsBlocked++;
         }
     }
 
@@ -99,6 +137,10 @@ public sealed class EnemyBehaviorTelemetry
         ["damage_taken_from_player"] = stats.DamageTakenFromPlayer,
         ["rear_hits_taken"] = stats.RearHitsTaken,
         ["killed_by_player"] = stats.KilledByPlayer,
+        ["elites_spawned"] = stats.ElitesSpawned,
+        ["telegraphed_attacks"] = stats.TelegraphedAttacks,
+        ["attacks_dodged"] = stats.AttacksDodged,
+        ["hits_blocked"] = stats.HitsBlocked,
     };
 
     private ArchetypeCombatStats GetOrCreate(string behaviorType)

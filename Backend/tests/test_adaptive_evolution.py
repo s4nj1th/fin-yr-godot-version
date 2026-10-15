@@ -401,3 +401,64 @@ class TestCandidatesUseTheFixedEnvironment:
             for key, value in config.FIXED_ENVIRONMENT.items():
                 assert candidate["params"][key] == value
             manager.report_outcome(candidate["id"], make_telemetry(exit_reached=(i % 2 == 0)))
+
+
+# --- Remedies, genome spaces and per-player settings ------------------------
+
+
+class TestRemediesAndSettings:
+    def test_lower_bound_fails_comfortable_trials(self):
+        passed, reason = AdaptiveEvolutionManager._evaluate_minimal_criterion(make_telemetry(damage_taken=10), 50)
+        assert (passed, reason) == (False, "too_easy")
+        assert AdaptiveEvolutionManager._evaluate_minimal_criterion(make_telemetry(damage_taken=60), 50) == (True, None)
+        # Off by default.
+        assert AdaptiveEvolutionManager._evaluate_minimal_criterion(make_telemetry(damage_taken=0)) == (True, None)
+
+    def test_without_the_surrogate_every_candidate_is_played(self):
+        mgr = AdaptiveEvolutionManager("nosur", use_surrogate=False, persist=False)
+        for i in range(12):
+            candidate, estimate = mgr.get_next_candidate()
+            assert estimate is None
+            mgr.report_outcome(candidate["id"], make_telemetry(deaths_retries=0 if i % 2 else 9))
+        assert mgr.surrogate.is_ready()
+        assert mgr.auto_accepted_count + mgr.auto_rejected_count == 0
+
+    def test_play_threshold_skips_uncertain_designs_predicted_to_fail(self, monkeypatch):
+        mgr = AdaptiveEvolutionManager("probe", play_threshold=0.5, persist=False)
+        monkeypatch.setattr(mgr.surrogate, "is_ready", lambda: True)
+        calls = iter([(0.45, 0.4, 0.4), (0.55, 0.4, 0.4)])
+        monkeypatch.setattr(mgr.surrogate, "predict_detailed", lambda params: next(calls))
+        candidate, estimate = mgr.get_next_candidate()
+        assert estimate["prob"] == 0.55
+        assert mgr.probes_skipped == 1
+
+    def test_legacy_space_manager_only_proposes_legacy_designs(self):
+        mgr = AdaptiveEvolutionManager("legacy", genome_space="legacy", persist=False)
+        for _ in range(5):
+            candidate, _ = mgr.get_next_candidate()
+            assert candidate["params"]["pack_size"] == 1.0
+            mgr.report_outcome(candidate["id"], make_telemetry())
+        assert len(mgr.surrogate.x_train[0]) == 6
+
+    def test_settings_survive_a_restart(self):
+        registry = PlayerRegistry()
+        mgr = registry.get("carol", settings={"use_surrogate": False, "min_damage": 25.0})
+        candidate, _ = mgr.get_next_candidate()
+        mgr.report_outcome(candidate["id"], make_telemetry(damage_taken=40))
+        reloaded = PlayerRegistry().get("carol")
+        assert reloaded.use_surrogate is False
+        assert reloaded.min_damage == 25.0
+        assert reloaded.hall_of_fame_size == 1
+
+    def test_archives_saved_before_the_new_genes_still_load(self, tmp_path):
+        old_design = {"id": "old", "parent_id": None, "generation": 0,
+                      "params": {**config.FIXED_ENVIRONMENT, "enemy_density": 0.2, "enemy_difficulty_scale": 1.0,
+                                 "enemy_behavior_mix": {"melee_chaser": 1.0}}}
+        path = tmp_path / "players" / "dave.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"hall_of_fame": [old_design], "surrogate": {"x_train": [[0.1] * 6], "y_train": [1.0]}}))
+        mgr = AdaptiveEvolutionManager("dave")
+        assert mgr.hall_of_fame[0]["params"]["pack_size"] == 1.0
+        assert mgr.surrogate.x_train == []  # six-feature training data is discarded
+        child, _ = mgr.get_next_candidate()
+        assert set(child["params"]["enemy_behavior_mix"]) == set(config.BEHAVIOR_TYPES)

@@ -1,5 +1,5 @@
 import genome
-from surrogate import Surrogate
+from surrogate import Surrogate, genome_to_features
 
 
 def make_params(**overrides):
@@ -105,6 +105,26 @@ def test_window_with_a_single_recent_class_has_no_model():
 
 def test_saved_training_data_from_a_different_genome_layout_is_discarded():
     surrogate = Surrogate(min_labels=2)
-    surrogate.load_state({"x_train": [[0.1] * 12, [0.2] * 12], "y_train": [1.0, 0.0]})
+    # Six features: saved by the original (two genes, four archetypes) layout.
+    surrogate.load_state({"x_train": [[0.1] * 6, [0.2] * 6], "y_train": [1.0, 0.0]})
     assert surrogate.x_train == [] and surrogate.y_train == []
     assert surrogate.is_ready() is False
+
+
+def test_feature_vector_follows_the_genome_space():
+    import genome
+    params = genome.make_default_genome()["params"]
+    assert len(genome_to_features(params, genome.FULL_SPACE)) == 12
+    assert len(genome_to_features(params, genome.LEGACY_SPACE)) == 6
+
+
+def test_ard_kernel_learns_one_length_scale_per_gene():
+    import random
+    import genome
+    random.seed(0)
+    surrogate = Surrogate(min_labels=2, kernel="ard")
+    for i in range(12):
+        g = genome.make_random_genome()
+        surrogate.add_example(g["params"], passed=g["params"]["enemy_density"] < 0.25)
+    length_scales = surrogate._model.kernel_.k1.k2.length_scale
+    assert len(length_scales) == genome.FULL_SPACE.dimension

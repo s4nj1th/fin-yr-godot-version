@@ -1,3 +1,5 @@
+import random
+import pytest
 import config
 import genome
 
@@ -82,7 +84,45 @@ def test_sanitize_params_rejects_non_dict_input_entirely():
 
 
 def test_only_enemy_genes_evolve():
-    assert set(config.GENOME_BOUNDS) == {"enemy_density", "enemy_difficulty_scale"}
+    assert set(config.GENOME_BOUNDS) == {"enemy_density", "enemy_difficulty_scale", "enemy_tempo", "elite_rate", "pack_size"}
+    assert len(config.BEHAVIOR_TYPES) == 7
+    assert genome.FULL_SPACE.dimension == 12
+    assert genome.LEGACY_SPACE.dimension == 6
+
+
+def test_legacy_space_keeps_the_new_genes_neutral():
+    random.seed(3)
+    parent = genome.make_random_genome(genome.LEGACY_SPACE)
+    designs = [parent] + [genome.mutate(parent, genome.LEGACY_SPACE) for _ in range(100)]
+    for g in designs:
+        p = g["params"]
+        assert (p["enemy_tempo"], p["elite_rate"], p["pack_size"]) == (1.0, 0.0, 1.0)
+        for behavior in ("melee_charger", "ranged_bomber", "melee_shield"):
+            assert p["enemy_behavior_mix"][behavior] == 0.0
+        assert abs(sum(p["enemy_behavior_mix"].values()) - 1.0) < 1e-9
+
+
+def test_full_space_designs_stay_in_bounds():
+    random.seed(4)
+    parent = genome.make_random_genome(genome.FULL_SPACE)
+    for g in [parent] + [genome.mutate(parent, genome.FULL_SPACE) for _ in range(200)]:
+        for key, (lo, hi) in config.GENOME_BOUNDS.items():
+            assert lo <= g["params"][key] <= hi
+        assert set(g["params"]["enemy_behavior_mix"]) == set(config.BEHAVIOR_TYPES)
+
+
+def test_designs_saved_by_the_four_archetype_version_are_completed():
+    old = {**config.FIXED_ENVIRONMENT, "enemy_density": 0.3, "enemy_difficulty_scale": 1.2,
+           "enemy_behavior_mix": {"melee_chaser": 0.5, "ranged_kite": 0.5}}
+    full = genome.complete_params(old)
+    assert (full["enemy_tempo"], full["elite_rate"], full["pack_size"]) == (1.0, 0.0, 1.0)
+    assert full["enemy_density"] == 0.3
+    assert set(full["enemy_behavior_mix"]) == set(config.BEHAVIOR_TYPES)
+
+
+def test_unknown_genome_space_is_rejected():
+    with pytest.raises(ValueError):
+        genome.get_space("huge")
 
 
 def test_every_genome_carries_the_fixed_environment():

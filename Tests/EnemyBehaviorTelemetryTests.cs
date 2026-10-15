@@ -69,4 +69,22 @@ public class EnemyBehaviorTelemetryTests
 
         Assert.Empty(telemetry.Snapshot());
     }
+
+    [Fact]
+    public void TelegraphedMisses_CountAsDodged_AndBlocksAndElitesAreCounted()
+    {
+        var telemetry = new EnemyBehaviorTelemetry();
+        telemetry.RecordSpawn("melee_charger", adapted: false, elite: true);
+        telemetry.RecordAttackResolved("melee_charger", adapted: false, hit: false, telegraphed: true);
+        telemetry.RecordAttackResolved("melee_charger", adapted: false, hit: true, telegraphed: true);
+        telemetry.RecordAttackResolved("melee_charger", adapted: false, hit: false, telegraphed: false);
+        telemetry.RecordPlayerHitOnEnemy("melee_shield", adapted: false, damageDealt: 3, wasRearHit: false, blocked: true);
+
+        var snapshot = telemetry.Snapshot();
+        var charger = snapshot["melee_charger"]["baseline"];
+        Assert.Equal(1, charger["elites_spawned"]);
+        Assert.Equal(2, charger["telegraphed_attacks"]);
+        Assert.Equal(1, charger["attacks_dodged"]);
+        Assert.Equal(1, snapshot["melee_shield"]["baseline"]["hits_blocked"]);
+    }
 }

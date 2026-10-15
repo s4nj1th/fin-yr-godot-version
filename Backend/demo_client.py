@@ -14,9 +14,9 @@ import argparse
 import numpy as np
 import requests
 
-from simulated_player import SimulatedPlayer, calibrate_kappa
+from simulated_player import SKILL_PROFILES, make_skilled_player
 
-SKILLS = {"novice": 0.25, "intermediate": 0.50, "expert": 0.75}
+SKILLS = SKILL_PROFILES
 
 
 def summarize(genome: dict) -> str:
@@ -34,7 +34,7 @@ def main() -> None:
     parser.add_argument("--trials", type=int, default=20)
     args = parser.parse_args()
 
-    player = SimulatedPlayer(kappa=calibrate_kappa(SKILLS[args.skill]))
+    player = make_skilled_player(args.skill)
     rng = np.random.default_rng()
     query = {"player_id": args.player}
     print(f"Starting from: {requests.get(f'{args.base}/api/health', params=query, timeout=5).json()}\n")
