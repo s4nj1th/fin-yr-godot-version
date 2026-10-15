@@ -131,4 +131,85 @@ public class AdaptationDirectorTests
 
         Assert.True(director.RearDefenseActive);
     }
+
+    // --- Live re-tasking ---------------------------------------------------
+
+    [Fact]
+    public void ConsumeChanges_ReportsAnActivationOnce()
+    {
+        var (telemetry, profile) = RecordRearAttacks(10);
+        var director = new AdaptationDirector();
+        director.Reevaluate(telemetry, profile);
+
+        AdaptationDirector.CountermeasureChanges first = director.ConsumeChanges();
+        Assert.True(first.RearActivated);
+        Assert.False(first.StealthActivated);
+        Assert.False(director.ConsumeChanges().Any);
+    }
+
+    [Fact]
+    public void ConsumeChanges_ReportsADeactivation()
+    {
+        var (telemetry, profile) = RecordRearAttacks(10);
+        var director = new AdaptationDirector();
+        director.Reevaluate(telemetry, profile);
+        director.ConsumeChanges();
+        director.Tick(30.0);
+        for (int i = 0; i < 30; i++)
+        {
+            telemetry.RecordAttack(hit: true, AttackDirection.Front);
+            profile.Update(telemetry);
+            director.Reevaluate(telemetry, profile);
+        }
+
+        AdaptationDirector.CountermeasureChanges changes = director.ConsumeChanges();
+        Assert.True(changes.RearDeactivated);
+        Assert.False(changes.RearActivated);
+    }
+
+    [Fact]
+    public void SelectForRetask_OnlyConsidersNearbyEnemies_NearestFirst_AndIsCapped()
+    {
+        var (_, profile) = RecordRearAttacks(10); // high confidence: coverage clamps to 0.9
+        var director = new AdaptationDirector(new System.Random(1));
+        var candidates = new List<AdaptationDirector.RetaskCandidate>();
+        for (int i = 0; i < 20; i++)
+        {
+            candidates.Add(new AdaptationDirector.RetaskCandidate(i, DistanceToPlayer: i));
+        }
+
+        List<int> chosen = director.SelectForRetask(candidates, profile);
+
+        Assert.InRange(chosen.Count, 1, AdaptationDirector.MaxRetaskedPerActivation);
+        Assert.All(chosen, index => Assert.True(index <= AdaptationDirector.RetaskRadius));
+        Assert.Equal(chosen.OrderBy(i => i).ToList(), chosen);
+    }
+
+    [Fact]
+    public void SelectForRetask_IgnoresEnemiesOutsideTheRadius()
+    {
+        var (_, profile) = RecordRearAttacks(10);
+        var director = new AdaptationDirector(new System.Random(2));
+        var far = new[] { new AdaptationDirector.RetaskCandidate(0, AdaptationDirector.RetaskRadius + 1) };
+        Assert.Empty(director.SelectForRetask(far, profile));
+    }
+
+    [Fact]
+    public void GrantAndRevoke_ChangeOnlyTheirOwnPartOfTheOrder()
+    {
+        var (_, profile) = RecordRearAttacks(10);
+        var order = EnemyTacticalOrder.None();
+        AdaptationDirector.GrantRearDefense(order, profile);
+        AdaptationDirector.GrantStealthCountermeasure(order, profile);
+        Assert.True(order.GuardRear && order.SearchLastKnownPosition);
+        Assert.True(order.TurnSpeedMultiplier > 1f);
+
+        AdaptationDirector.RevokeRearDefense(order);
+        Assert.False(order.GuardRear);
+        Assert.Equal(1f, order.TurnSpeedMultiplier);
+        Assert.True(order.SearchLastKnownPosition);
+
+        AdaptationDirector.RevokeStealthCountermeasure(order);
+        Assert.False(order.SearchLastKnownPosition);
+    }
 }

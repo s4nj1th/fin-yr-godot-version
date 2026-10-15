@@ -82,7 +82,9 @@ session (see [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md)):
   preference > 0.35, confidence > 0.5) and a *stealth countermeasure* after
   three line-of-sight breaks (confidence > 0.5), each with an 8 s cooldown
   and minimum duration. Newly spawned enemies receive the active order with
-  probability equal to the confidence clamped to [0.3, 0.9].
+  probability equal to the confidence clamped to [0.3, 0.9]; with live
+  re-tasking, up to 6 enemies already within 10 tiles of the player take it
+  when it switches on, and all drop it when it switches off.
 - Enemies with a stealth order use `EnemyPerception` (unaware → tracking →
   investigating 3 s → searching 5 s → returning 3 s), `GridLineOfSight` and
   BFS (`GridPathfinder`) to search the player's last known position.
@@ -105,12 +107,12 @@ discovery texture records what the player has seen.
 
 ## 7. Automated tests
 
-- `Tests/` (xUnit, `dotnet test`, 71 tests): the engine-independent AI code —
+- `Tests/` (xUnit, `dotnet test`, 76 tests): the engine-independent AI code —
   archetype catalog and modifiers, telegraph geometry, attack-direction
   classification, line of sight, pathfinding, playstyle profile, adaptation
-  director, behaviour telemetry, exit bot and fighter bot.
-- `Backend/tests/` (pytest, 135 tests): genome spaces, surrogate, evolution
-  manager and remedies, HTTP API and study endpoints, simulated player,
+  director and live re-tasking, behaviour telemetry, exit bot and fighter bot.
+- `Backend/tests/` (pytest, 141 tests): genome spaces, surrogate, evolution
+  manager, remedies and the per-archetype criterion, HTTP API and study endpoints, simulated player,
   LLM-output parsing, behaviour analytics, study export and analysis.
 - [INTEGRATION_TESTING.md](INTEGRATION_TESTING.md): end-to-end runs of the
   real game against the real backend.

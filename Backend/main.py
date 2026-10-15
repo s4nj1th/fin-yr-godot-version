@@ -82,6 +82,7 @@ def evolution_config() -> dict:
             "max_trial_seconds": config.MAX_TRIAL_SECONDS,
             "max_deaths_allowed": config.MAX_DEATHS_ALLOWED,
             "min_damage_taken": config.MIN_DAMAGE_TAKEN,
+            "archetype_cost_ratio": config.ARCHETYPE_COST_RATIO,
         },
     }
 

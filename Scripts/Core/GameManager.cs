@@ -413,7 +413,7 @@ public partial class GameManager : Node3D
 		{
 			_playerTelemetry.RecordLineOfSightBreak();
 			_playerProfile.Update(_playerTelemetry);
-			_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+			ReevaluateDirector();
 			GD.Print($"[AdaptiveAI] Line-of-sight break #{_playerTelemetry.LineOfSightBreaks} recorded — " +
 				$"StealthPreference={_playerProfile.StealthPreference:F2} Confidence={_playerProfile.Confidence:F2}");
 			LogAdaptationTransitions();
@@ -1357,6 +1357,7 @@ void fragment() {
 		// spawned this cycle — the first milestone (section 15) only ever
 		// adapts newly spawned enemies, never retasks an enemy already alive.
 		_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+		_adaptationDirector.ConsumeChanges(); // the enemies these changes would re-task are being replaced
 		if (_adaptationDirector.RearDefenseActive || _adaptationDirector.StealthCountermeasureActive)
 		{
 			GD.Print($"[AdaptiveAI] Spawning this dungeon's enemies with RearDefenseActive={_adaptationDirector.RearDefenseActive} " +
@@ -1414,21 +1415,95 @@ void fragment() {
 		enemy.Initialize(tile, archetype, elite);
 		// Study sessions switch the tactical director off (see GameManager.Study.cs).
 		enemy.TacticalOrder = _studyMode ? EnemyTacticalOrder.None() : _adaptationDirector.CreateOrderForNewEnemy(_playerProfile);
-		bool isAdapted = enemy.TacticalOrder.GuardRear || enemy.TacticalOrder.SearchLastKnownPosition;
+		bool isAdapted = IsAdapted(enemy);
 		// Captured by value so each hit is attributed to the archetype that
-		// actually threw it, for the per-archetype telemetry.
+		// actually threw it, for the per-archetype telemetry. Whether it is
+		// "adapted" is read when the event happens, since live re-tasking can
+		// change an enemy's order after it spawned.
 		EnemyController spawnedEnemy = enemy;
-		enemy.EnemyAttackedPlayer += damage => OnEnemyAttackedPlayer(damage, spawnedEnemy, isAdapted);
+		enemy.EnemyAttackedPlayer += damage => OnEnemyAttackedPlayer(damage, spawnedEnemy, IsAdapted(spawnedEnemy));
 		enemy.TelegraphStarted += OnEnemyTelegraphStarted;
 		enemy.AttackResolved += (source, hit, telegraphed) =>
 		{
-			_behaviorTelemetry.RecordAttackResolved(source.BehaviorType, isAdapted, hit, telegraphed);
+			_behaviorTelemetry.RecordAttackResolved(source.BehaviorType, IsAdapted(source), hit, telegraphed);
 			_botDangers.RemoveAll(d => d.Source == source);
 		};
 		_enemyRoot.AddChild(enemy);
 		_enemies.Add(enemy);
 		_behaviorTelemetry.RecordSpawn(behavior, isAdapted, elite);
 		return isAdapted;
+	}
+
+	private static bool IsAdapted(EnemyController enemy) =>
+		enemy.TacticalOrder.GuardRear || enemy.TacticalOrder.SearchLastKnownPosition;
+
+	/// <summary>
+	/// Re-evaluates the director and applies live re-tasking: a countermeasure
+	/// that has just switched on is offered to the enemies already near the
+	/// player (AdaptationDirector.SelectForRetask), and one that has just
+	/// switched off is dropped by every enemy. Study sessions keep the
+	/// director off.
+	/// </summary>
+	private void ReevaluateDirector()
+	{
+		_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+		AdaptationDirector.CountermeasureChanges changes = _adaptationDirector.ConsumeChanges();
+		if (_studyMode || !changes.Any)
+		{
+			return;
+		}
+
+		var living = new List<EnemyController>();
+		foreach (EnemyController enemy in _enemies)
+		{
+			if (enemy.CurrentHp > 0)
+			{
+				living.Add(enemy);
+			}
+		}
+
+		if (changes.RearDeactivated || changes.StealthDeactivated)
+		{
+			foreach (EnemyController enemy in living)
+			{
+				if (changes.RearDeactivated)
+				{
+					AdaptationDirector.RevokeRearDefense(enemy.TacticalOrder);
+				}
+
+				if (changes.StealthDeactivated)
+				{
+					AdaptationDirector.RevokeStealthCountermeasure(enemy.TacticalOrder);
+				}
+			}
+		}
+
+		foreach ((bool activated, string name, Action<EnemyController> grant) in new (bool, string, Action<EnemyController>)[]
+		{
+			(changes.RearActivated, "rear defence", e => AdaptationDirector.GrantRearDefense(e.TacticalOrder, _playerProfile)),
+			(changes.StealthActivated, "stealth countermeasure", e => AdaptationDirector.GrantStealthCountermeasure(e.TacticalOrder, _playerProfile)),
+		})
+		{
+			if (!activated)
+			{
+				continue;
+			}
+
+			var candidates = new List<AdaptationDirector.RetaskCandidate>();
+			for (int i = 0; i < living.Count; i++)
+			{
+				int distance = Math.Abs(living[i].GridPos.X - _playerPos.X) + Math.Abs(living[i].GridPos.Y - _playerPos.Y);
+				candidates.Add(new AdaptationDirector.RetaskCandidate(i, distance));
+			}
+
+			List<int> chosen = _adaptationDirector.SelectForRetask(candidates, _playerProfile);
+			foreach (int index in chosen)
+			{
+				grant(living[index]);
+			}
+
+			GD.Print($"[AdaptiveAI] Live re-tasking: {chosen.Count} enemies near the player took the {name}.");
+		}
 	}
 
 	private bool IsEnemyAt(Vector2I tile)
@@ -1668,14 +1743,14 @@ void fragment() {
 
 		_playerTelemetry.RecordAttack(hit: true, direction);
 		_playerProfile.Update(_playerTelemetry);
-		_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
+		ReevaluateDirector();
 		GD.Print($"[AdaptiveAI] Attack on {target.ClassDefinition.ClassId} classified {direction} " +
 			$"(targetWasAware={targetWasAware}) — attacks={_playerTelemetry.Attacks} rear={_playerTelemetry.BackAttacks} " +
 			$"BackAttackPreference={_playerProfile.BackAttackPreference:F2} Confidence={_playerProfile.Confidence:F2}");
 		LogAdaptationTransitions();
 		_sinceLastAttackSeconds = 0.0;
 
-		bool targetIsAdapted = target.TacticalOrder.GuardRear || target.TacticalOrder.SearchLastKnownPosition;
+		bool targetIsAdapted = IsAdapted(target);
 		EnemyController.HitResult hit = target.TakeDamage(_playerStats.Attack, direction, _playerPos);
 		_behaviorTelemetry.RecordPlayerHitOnEnemy(target.BehaviorType, targetIsAdapted, hit.Damage, direction == AttackDirection.Rear, hit.Blocked);
 

@@ -462,3 +462,64 @@ class TestRemediesAndSettings:
         assert mgr.surrogate.x_train == []  # six-feature training data is discarded
         child, _ = mgr.get_next_candidate()
         assert set(child["params"]["enemy_behavior_mix"]) == set(config.BEHAVIOR_TYPES)
+
+
+# --- Per-archetype criterion (selection that sees composition) -------------
+
+
+def breakdown(**archetypes):
+    """{archetype: (enemies, damage)} -> the game's enemy_behavior_breakdown shape."""
+    return {a: {"baseline": {"spawned": n, "damage_dealt_to_player": d}} for a, (n, d) in archetypes.items()}
+
+
+def design_with(shield_weight):
+    g = genome_lib.make_default_genome()
+    rest = (1 - shield_weight) / 3
+    g["params"]["enemy_behavior_mix"] = {b: 0.0 for b in config.BEHAVIOR_TYPES}
+    g["params"]["enemy_behavior_mix"].update(
+        {"melee_chaser": rest, "melee_hit_run": rest, "ranged_kite": rest, "melee_shield": shield_weight})
+    return g
+
+
+class TestPerArchetypeCriterion:
+    def test_off_by_default(self):
+        mgr = AdaptiveEvolutionManager("ac-off", persist=False)
+        mgr._record_archetypes({"enemy_behavior_breakdown": breakdown(melee_shield=(40, 2000), melee_chaser=(40, 100))})
+        assert mgr.nemeses == set()
+
+    def test_an_archetype_that_costs_much_more_becomes_a_nemesis(self):
+        mgr = AdaptiveEvolutionManager("ac-on", archetype_ratio=1.5, persist=False)
+        mgr._record_archetypes({"enemy_behavior_breakdown": breakdown(
+            melee_shield=(20, 400), melee_chaser=(20, 100), ranged_kite=(20, 100))})
+        # average 600/60 = 10 per enemy; shields cost 20 (> 15), the others 5.
+        assert mgr.nemeses == {"melee_shield"}
+
+    def test_too_little_evidence_names_no_nemesis(self):
+        mgr = AdaptiveEvolutionManager("ac-few", archetype_ratio=1.5, persist=False)
+        mgr._record_archetypes({"enemy_behavior_breakdown": breakdown(
+            melee_shield=(config.ARCHETYPE_MIN_OBSERVED - 1, 500), melee_chaser=(30, 30))})
+        assert mgr.nemeses == set()
+
+    def test_a_design_with_too_many_nemeses_fails_and_is_not_proposed(self):
+        mgr = AdaptiveEvolutionManager("ac-fail", archetype_ratio=1.5, persist=False)
+        mgr._record_archetypes({"enemy_behavior_breakdown": breakdown(
+            melee_shield=(20, 400), melee_chaser=(20, 100), ranged_kite=(20, 100))})
+        heavy = design_with(0.4)
+        mgr.pending[heavy["id"]] = heavy
+        assert mgr.report_outcome(heavy["id"], make_telemetry()) == (False, "archetype_overwhelming")
+
+        light = design_with(0.1)
+        mgr.pending[light["id"]] = light
+        assert mgr.report_outcome(light["id"], make_telemetry()) == (True, None)
+
+        mgr.hall_of_fame = [design_with(0.4), design_with(0.1)]
+        assert all(not mgr._exceeds_nemesis_share(p["params"]) for p in mgr._parents())
+
+    def test_the_record_survives_a_restart(self):
+        mgr = AdaptiveEvolutionManager("ac-save", archetype_ratio=1.5)
+        candidate, _ = mgr.get_next_candidate()
+        mgr.report_outcome(candidate["id"], {**make_telemetry(), "enemy_behavior_breakdown": breakdown(
+            melee_shield=(20, 400), melee_chaser=(20, 100))})
+        reloaded = PlayerRegistry().get("ac-save")
+        assert reloaded.archetype_record == {"melee_shield": [20, 400], "melee_chaser": [20, 100]}
+        assert reloaded.archetype_ratio == 1.5

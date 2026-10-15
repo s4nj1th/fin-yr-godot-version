@@ -65,6 +65,7 @@ class AdaptiveEvolutionManager:
         surrogate_kernel: Optional[str] = None,
         play_threshold: Optional[float] = None,
         min_damage: Optional[float] = None,
+        archetype_ratio: Optional[float] = None,
         use_surrogate: bool = True,
         persist: bool = True,
     ) -> None:
@@ -89,6 +90,10 @@ class AdaptiveEvolutionManager:
         # challenge).
         self.play_threshold = config.PLAY_THRESHOLD if play_threshold is None else play_threshold
         self.min_damage = config.MIN_DAMAGE_TAKEN if min_damage is None else min_damage
+        self.archetype_ratio = config.ARCHETYPE_COST_RATIO if archetype_ratio is None else archetype_ratio
+        # Pooled per-archetype record of played trials: {archetype: [enemies, damage]}.
+        self.archetype_record: dict[str, list[int]] = {}
+        self.composition_skipped = 0
         self.probes_skipped = 0
         # Without the surrogate every candidate is played (it is still
         # trained, so its predictions can be analysed afterwards).
@@ -124,6 +129,11 @@ class AdaptiveEvolutionManager:
         when the surrogate isn't trained yet or wasn't consulted."""
         for _ in range(config.SURROGATE_MAX_PROPOSAL_ATTEMPTS):
             candidate = self._propose_candidate()
+            if self._exceeds_nemesis_share(candidate["params"]):
+                # Selection that sees composition: too many of an archetype
+                # this player is known to handle badly.
+                self.composition_skipped += 1
+                continue
 
             if not self.use_surrogate or not self.surrogate.is_ready():
                 self._hand_out(candidate)
@@ -161,6 +171,9 @@ class AdaptiveEvolutionManager:
             return False, "unknown_genome_id"
 
         passed, reason = self._evaluate_minimal_criterion(telemetry, self.min_damage)
+        self._record_archetypes(telemetry)
+        if passed and self._exceeds_nemesis_share(candidate["params"]):
+            passed, reason = False, "archetype_overwhelming"
 
         if evaluator_type == "bot":
             self.bot_evaluation_count += 1
@@ -223,6 +236,7 @@ class AdaptiveEvolutionManager:
             "surrogate_kernel": self.surrogate_kernel,
             "play_threshold": self.play_threshold,
             "min_damage": self.min_damage,
+            "archetype_ratio": self.archetype_ratio,
             "use_surrogate": self.use_surrogate,
         }
 
@@ -246,6 +260,9 @@ class AdaptiveEvolutionManager:
             "play_threshold": self.play_threshold,
             "min_damage": self.min_damage,
             "probes_skipped": self.probes_skipped,
+            "archetype_ratio": self.archetype_ratio,
+            "nemeses": sorted(self.nemeses),
+            "composition_skipped": self.composition_skipped,
             "use_surrogate": self.use_surrogate,
             "llm_mutation_mode": config.LLM_MUTATION_MODE,
             "llm_mutation_available": llm_mutation.is_available(),
@@ -287,13 +304,54 @@ class AdaptiveEvolutionManager:
     def _parents(self) -> list[dict[str, Any]]:
         """The archive, or — with parent filtering on and a ready surrogate —
         only the archived designs the surrogate still predicts the player
-        would pass (all of them if it predicts none)."""
+        would pass (all of them if it predicts none). With the per-archetype
+        criterion on, archived designs that now have too many of a nemesis
+        are left out as parents too (unless that would leave none)."""
+        pool = self.hall_of_fame
+        if self.nemeses:
+            pool = [g for g in pool if not self._exceeds_nemesis_share(g["params"])] or pool
         if not self.filter_parents or not self.surrogate.is_ready():
-            return self.hall_of_fame
+            return pool
         if self._parent_pool is None:
-            means = self.surrogate.predict_mean([g["params"] for g in self.hall_of_fame])
-            self._parent_pool = [g for g, m in zip(self.hall_of_fame, means) if m >= 0.5] or list(self.hall_of_fame)
+            means = self.surrogate.predict_mean([g["params"] for g in pool])
+            self._parent_pool = [g for g, m in zip(pool, means) if m >= 0.5] or list(pool)
         return self._parent_pool
+
+    # --- Per-archetype criterion -------------------------------------------
+
+    def _record_archetypes(self, telemetry: dict[str, Any]) -> None:
+        """Pools a played trial's per-archetype enemies and damage."""
+        for archetype, situations in (telemetry.get("enemy_behavior_breakdown") or {}).items():
+            if not isinstance(situations, dict):
+                continue
+            record = self.archetype_record.setdefault(archetype, [0, 0])
+            for counters in situations.values():
+                if isinstance(counters, dict):
+                    record[0] += int(counters.get("spawned", 0))
+                    record[1] += int(counters.get("damage_dealt_to_player", 0))
+
+    @property
+    def nemeses(self) -> set[str]:
+        """Archetypes this player handles badly: observed at least
+        ARCHETYPE_MIN_OBSERVED times, costing more than archetype_ratio times
+        the player's average damage per enemy. Empty when the criterion is off."""
+        if self.archetype_ratio <= 0:
+            return set()
+        total_enemies = sum(n for n, _ in self.archetype_record.values())
+        total_damage = sum(d for _, d in self.archetype_record.values())
+        if total_enemies == 0 or total_damage == 0:
+            return set()
+        average = total_damage / total_enemies
+        return {a for a, (n, d) in self.archetype_record.items()
+                if n >= config.ARCHETYPE_MIN_OBSERVED and d / n > self.archetype_ratio * average}
+
+    def _exceeds_nemesis_share(self, params: dict[str, Any]) -> bool:
+        nemeses = self.nemeses
+        if not nemeses:
+            return False
+        mix = params.get("enemy_behavior_mix", {})
+        total = sum(mix.values()) or 1.0
+        return sum(mix.get(a, 0.0) for a in nemeses) / total > config.NEMESIS_MAX_SHARE
 
     def _needs_real_evaluation(self, prob: float, total_std: float, epistemic_std: float) -> bool:
         lo, hi = self.uncertainty_band
@@ -387,6 +445,8 @@ class AdaptiveEvolutionManager:
             self.llm_mutation_failures = state.get("llm_mutation_failures", 0)
             self.bootstrap_designs_served = state.get("bootstrap_designs_served", 0)
             self.probes_skipped = state.get("probes_skipped", 0)
+            self.archetype_record = state.get("archetype_record", {})
+            self.composition_skipped = state.get("composition_skipped", 0)
             # Designs saved by the four-archetype version get the new genes
             # at their neutral values.
             for g in self.hall_of_fame + list(self.pending.values()):
@@ -421,6 +481,8 @@ class AdaptiveEvolutionManager:
                     "llm_mutation_failures": self.llm_mutation_failures,
                     "bootstrap_designs_served": self.bootstrap_designs_served,
                     "probes_skipped": self.probes_skipped,
+                    "archetype_record": self.archetype_record,
+                    "composition_skipped": self.composition_skipped,
                     "surrogate": self.surrogate.state_dict(),
                 },
                 f,
@@ -448,7 +510,8 @@ def saved_settings(player_id: str) -> dict[str, Any]:
     if not isinstance(settings, dict):
         return {}
     allowed = {"gate_uncertainty", "bootstrap", "surrogate_window", "filter_parents", "uncertainty_band",
-               "std_threshold", "genome_space", "surrogate_kernel", "play_threshold", "min_damage", "use_surrogate"}
+               "std_threshold", "genome_space", "surrogate_kernel", "play_threshold", "min_damage",
+               "archetype_ratio", "use_surrogate"}
     settings = {k: v for k, v in settings.items() if k in allowed}
     if "uncertainty_band" in settings:
         settings["uncertainty_band"] = tuple(settings["uncertainty_band"])

@@ -168,10 +168,24 @@ were failed 59% of the time by a novice, against 10% for the novice's own),
 so separate archives are what makes the adaptation personal. Note that the
 pass/fail criterion personalizes *how hard* the encounters are, not *what
 they consist of*: two simulated players who differ only in how well they
-handle telegraphed attacks evolved archives with the same archetype mix.
+handle telegraphed attacks evolved archives with the same archetype mix —
+unless the per-archetype criterion below is on.
 
-Each player's settings (gate, kernel, remedies, `use_surrogate`) are saved
-with their state, so a study condition survives a restart.
+**Per-archetype criterion** (`ARCHETYPE_COST_RATIO`, off by default; 1.5 in
+the paper). To personalize *which* enemies a player meets, the backend pools
+each player's per-archetype telemetry (`enemy_behavior_breakdown`: enemies
+spawned and damage dealt) over all their played trials. An archetype that
+has cost the player more than 1.5× their average damage per enemy, over at
+least 15 enemies, becomes a *nemesis*; designs in which nemeses make up more
+than 15% of the mix fail (`archetype_overwhelming`), are no longer proposed
+and are not used as parents. In the simulation it found 88–94% of each
+player's true nemeses and at least halved their share of the archive (14% → 5% for a
+player who does not dodge, 42% → 21% for one who does), at the cost of more
+failed trials. `/api/stats` lists the current `nemeses`.
+
+Each player's settings (gate, kernel, remedies, per-archetype criterion,
+`use_surrogate`) are saved with their state, so a study condition survives a
+restart.
 
 The scripted bot plays as player `bot` by default, so **bot trials never
 train a human player's surrogate**. Trials still carry

@@ -249,7 +249,8 @@ scale with a differently-scaled one.
   that diverge before treating bot volume as representative of how a human
   actually experiences each archetype.
 - **`adapted` is per-enemy-true but still coarse.** It's a binary "carried
-  an active tactical order at spawn," not a measure of *how strongly* that
+  an active tactical order when the event happened" (orders can change after
+  spawn through live re-tasking), not a measure of *how strongly* that
   order shaped the specific event (`GuardRear`'s `TurnSpeedMultiplier` and
   `SearchLastKnownPosition`'s `SearchRadius` both vary continuously with
   profile confidence — see `AdaptationDirector.CreateOrderForNewEnemy`).

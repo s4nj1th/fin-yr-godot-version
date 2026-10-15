@@ -92,3 +92,17 @@ def test_calibrated_skill_clears_the_target_share_of_random_designs():
 
 def test_more_skilled_players_take_less_damage():
     assert calibrate_kappa(0.75, n_samples=2000) < calibrate_kappa(0.25, n_samples=2000)
+
+
+def test_archetype_breakdown_sums_to_the_trial_and_leaves_outcomes_unchanged():
+    from simulated_player import threat_breakdown
+    params = design(enemy_density=0.4, pack_size=2.0)
+    plain = SimulatedPlayer(kappa=0.8)
+    split = SimulatedPlayer(kappa=0.8, report_archetypes=True, archetype_seed=3)
+    a = plain.play(params, np.random.default_rng(1))
+    b = split.play(params, np.random.default_rng(1))
+    assert a["damage_taken"] == b["damage_taken"]  # the split draws from its own generator
+    shares = b["enemy_behavior_breakdown"]
+    assert abs(sum(v["baseline"]["damage_dealt_to_player"] for v in shares.values()) - b["damage_taken"]) <= len(shares)
+    threat, _ = threat_breakdown(params, 0.5)
+    assert abs(sum(threat.values()) - raw_threat(params, 0.5)) < 1e-6 * raw_threat(params, 0.5)

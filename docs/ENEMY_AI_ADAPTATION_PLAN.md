@@ -313,6 +313,16 @@ Use safeguards:
 
 Enemies should appear to learn from encounters, not instantly read the player's mind.
 
+**Implemented — live re-tasking.** Besides handing orders to newly spawned
+enemies, the director now re-tasks enemies already on the map
+(`AdaptationDirector.ConsumeChanges`, `SelectForRetask`, `GameManager.ReevaluateDirector`):
+when a countermeasure switches on, the living enemies within
+`RetaskRadius` (10 tiles) of the player, nearest first, each take it with
+the same probability as a new spawn (the profile's confidence, clamped to
+[0.3, 0.9]), at most `MaxRetaskedPerActivation` (6) per activation; when a
+countermeasure switches off, every enemy drops it. Study sessions keep the
+director off.
+
 ## 10. Countermeasure: Repeated Rear Attacks
 
 Detect the following:
@@ -483,7 +493,7 @@ The adaptive system is working when:
 - The same player behavior produces a measurable profile change.
 - Profile changes are visible in debug output.
 - Enemies react only after sufficient evidence.
-- New enemies receive the adaptation while existing enemies follow their current orders predictably.
+- New enemies receive the adaptation, and a bounded number of nearby existing enemies are re-tasked when a countermeasure switches on or off.
 - A player can change strategy and reduce the previous countermeasure.
 - Enemies use last-known information rather than omniscient current position.
 - Obstacles can be navigated around intentionally.

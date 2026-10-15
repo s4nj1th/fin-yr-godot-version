@@ -1,7 +1,7 @@
 # Integration Testing
 
-Unit tests check each module on its own (`Backend/tests/`, 135 tests;
-`Tests/`, 71 tests). The scripts in [`tools/`](../tools/) check the real game
+Unit tests check each module on its own (`Backend/tests/`, 141 tests;
+`Tests/`, 76 tests). The scripts in [`tools/`](../tools/) check the real game
 and the real backend working together and measure the game for the
 simulated player. They run the Godot game headless with a fixed frame time
 (`--fixed-fps 60`), so a run plays as fast as the machine allows and is
@@ -48,6 +48,11 @@ Outcomes: ['pass', 'too_slow_abandoned', 'too_slow_abandoned', 'pass', 'pass', '
 
 The enemy count follows the evolved density and pack size while the dungeon
 stays the same.
+
+In a 10-trial run on 16 Oct 2026 (all checks passed) the tactical director
+also activated its stealth countermeasure during bot play, and live
+re-tasking handed it to two enemies near the player (`[AdaptiveAI] Live
+re-tasking: 2 enemies near the player took the stealth countermeasure.`).
 
 ### The study session — `tools/integration_test.py --study`
 

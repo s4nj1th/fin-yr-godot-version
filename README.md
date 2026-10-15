@@ -50,6 +50,11 @@ never trains a human player's model.
   damage each enemy deals (13,440 scripted duels, `tools/run_duels.py`); the
   simulator is built from those measurements and checked against the full
   dungeon (`tools/validate_simulator.py`).
+- **Selection that sees composition.** An optional per-archetype criterion
+  learns, from each player's own telemetry, which enemy types they handle
+  badly and keeps those types from dominating their encounters.
+- **Live re-tasking.** The tactical director now updates enemies already on
+  the map when it switches a countermeasure on or off, not only new spawns.
 - **Stronger evaluation.** The search is compared with a DDA staircase,
   MAP-Elites and Bayesian-optimization difficulty targeting, in both the
   old six-gene and the new twelve-gene space, with two remedies for the
@@ -142,8 +147,8 @@ python generate_metrics_plots.py --player sim-intermediate     # charts in data/
 ## Tests
 
 ```bash
-cd Backend && pip install -r requirements-dev.txt && pytest     # 135 tests
-cd Tests && dotnet test                                         # 71 tests
+cd Backend && pip install -r requirements-dev.txt && pytest     # 141 tests
+cd Tests && dotnet test                                         # 76 tests
 python tools/integration_test.py --trials 10                    # real game + real backend
 python tools/integration_test.py --study                        # a complete automated study session
 ```
@@ -166,7 +171,8 @@ Headline findings (50 runs per condition, intermediate player unless stated):
 | Against the baselines | DDA, Bayesian-optimization targeting and an objective GA serve harder encounters but keep 62–77 designs, 11–18% of which the player would fail on replay |
 | Six vs. twelve genes | the gate's gain holds (9.4× and 8.3×) |
 | Cold start | in the six-gene space the original default design leaves 28 of 50 novice runs with nothing accepted; random designs until the first pass leave none |
-| Adaptation is personal — in difficulty | an expert's designs are failed 59% of the time by a novice, against 10% for the novice's own; the archetype mix, however, does not personalize |
+| Adaptation is personal — in difficulty | an expert's designs are failed 59% of the time by a novice, against 10% for the novice's own |
+| …and, with the per-archetype criterion, in composition | pass/fail alone leaves the enemy mix unchanged; pooling each player's damage per enemy type finds 88–94% of the types they handle badly and at least halves their share of the archive |
 | An archive never forgets | after a drop to novice skill, contamination jumps from 7% to 32%; a windowed surrogate lowers the played failure rate from 63% to 39% |
 | LLM-guided mutation | no detectable benefit over Gaussian mutation (83% vs 86% offspring pass rate, 10-seed pilot) |
 

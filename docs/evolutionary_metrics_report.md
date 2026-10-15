@@ -50,8 +50,9 @@ after three hits or line-of-sight breaks. They drive the `AdaptationDirector`
 `bot_evaluations`, `auto_accepted`, `auto_rejected`, `surrogate_ready`,
 `surrogate_noise_std`, `gate_uncertainty`, `bootstrap`,
 `bootstrap_designs_served`, `genome_space`, `surrogate_kernel`,
-`play_threshold`, `probes_skipped`, `min_damage`, `use_surrogate`, and the
-LLM-mutation counters.
+`play_threshold`, `probes_skipped`, `min_damage`, `archetype_ratio`,
+`nemeses`, `composition_skipped`, `use_surrogate`, and the LLM-mutation
+counters.
 
 ## 5. Evaluation metrics (simulation study in the research paper)
 

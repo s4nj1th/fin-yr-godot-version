@@ -123,6 +123,17 @@ MIN_DAMAGE_TAKEN = float(os.getenv("MIN_DAMAGE_TAKEN", "0"))
 # surrogate's predicted pass probability is at least this; otherwise it is
 # skipped (neither played nor archived). 0 = off.
 PLAY_THRESHOLD = float(os.getenv("PLAY_THRESHOLD", "0"))
+# Per-archetype criterion (selection that sees composition). Each player's
+# per-archetype damage per enemy is pooled over their played trials from the
+# telemetry the game reports (enemy_behavior_breakdown). An archetype becomes
+# the player's *nemesis* once, over at least ARCHETYPE_MIN_OBSERVED enemies,
+# it has cost them more than ARCHETYPE_COST_RATIO times their average damage
+# per enemy. A design in which nemeses make up more than NEMESIS_MAX_SHARE of
+# the behaviour mix fails the criterion ("archetype_overwhelming"), is no
+# longer proposed, and is not used as a parent. 0 = off.
+ARCHETYPE_COST_RATIO = float(os.getenv("ARCHETYPE_COST_RATIO", "0"))
+ARCHETYPE_MIN_OBSERVED = 15
+NEMESIS_MAX_SHARE = 0.15
 
 # --- Cold start ---
 # What to serve while a player's archive is still empty:

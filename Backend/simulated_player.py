@@ -177,6 +177,33 @@ def raw_threat(params: dict[str, Any], dodge: float = 0.5, table: Optional[DuelT
     return threat
 
 
+def threat_breakdown(params: dict[str, Any], dodge: float = 0.5,
+                     table: Optional[DuelTable] = None) -> tuple[dict[str, float], dict[str, float]]:
+    """Per archetype: (nominal threat, expected number of enemies). The
+    threats sum to raw_threat (which is computed separately so that its
+    floating-point result, and so every earlier simulation, is unchanged)."""
+    table = table or default_table()
+    params = genome_lib.complete_params(params)
+    mix = params["enemy_behavior_mix"]
+    total_w = sum(mix.get(b, 0.0) for b in table.behaviors) or 1.0
+    scale, tempo, elite = params["enemy_difficulty_scale"], params["enemy_tempo"], params["elite_rate"]
+    packs = ELIGIBLE_ROOMS * effective_enemy_share(params)
+    threat = {b: 0.0 for b in table.behaviors}
+    enemies = {b: 0.0 for b in table.behaviors}
+    for k, pk in pack_distribution(params["pack_size"]):
+        for behavior in table.behaviors:
+            w = mix.get(behavior, 0.0) / total_w
+            if w > 0:
+                threat[behavior] += packs * pk * w * table.single(behavior, scale, tempo, elite, dodge) * table.multiplier(behavior, k, dodge)
+                enemies[behavior] += packs * pk * w * k
+    total_enemies = sum(enemies.values())
+    if total_enemies > MAX_ENEMIES:
+        factor = MAX_ENEMIES / total_enemies
+        threat = {b: v * factor for b, v in threat.items()}
+        enemies = {b: v * factor for b, v in enemies.items()}
+    return threat, enemies
+
+
 def _phi(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
@@ -192,6 +219,14 @@ class SimulatedPlayer:
     sigma: float = 0.35
     damage_scale: float = 1.0  # sensitivity analyses: a uniform error in the measured table
     table: Optional[DuelTable] = field(default=None, repr=False)
+    # With report_archetypes, play() also reports per-archetype enemies and
+    # damage (as the game's enemy_behavior_breakdown does), drawing that
+    # split from its own generator so the trial outcomes, and every earlier
+    # simulation, are unchanged. archetype_sigma is the log-normal noise on
+    # each archetype's share of the damage within one trial (an assumption).
+    report_archetypes: bool = False
+    archetype_sigma: float = 0.5
+    archetype_seed: int = 0
 
     def expected_damage(self, params: dict[str, Any]) -> float:
         return self.kappa * self.damage_scale * raw_threat(params, self.dodge, self.table)
@@ -213,7 +248,7 @@ class SimulatedPlayer:
         # Only the death-cap clause is modelled: crossing the fixed map is
         # assumed to take longer than MIN_TRIAL_SECONDS, and timeouts are
         # subsumed by repeated deaths.
-        return {
+        telemetry = {
             "time_taken_sec": 90.0,
             "damage_taken": int(realized),
             "health_remaining": max(0, PLAYER_MAX_HP - int(realized) % PLAYER_MAX_HP),
@@ -221,6 +256,28 @@ class SimulatedPlayer:
             "exit_reached": True,
             "quit_early": False,
         }
+        if self.report_archetypes:
+            telemetry["enemy_behavior_breakdown"] = self._archetype_breakdown(params, realized)
+        return telemetry
+
+    def _archetype_breakdown(self, params: dict[str, Any], realized: float) -> dict[str, Any]:
+        """Splits a trial's realized damage across archetypes: each archetype's
+        expected share, perturbed log-normally; enemy counts are Poisson
+        around their expectation. Shape as in the game's telemetry."""
+        if not hasattr(self, "_split_rng"):
+            self._split_rng = np.random.default_rng(self.archetype_seed + 7_919)
+        threat, enemies = threat_breakdown(params, self.dodge, self.table)
+        counts = {b: int(self._split_rng.poisson(n)) if n > 0 else 0 for b, n in enemies.items()}
+        weights = {b: threat[b] * math.exp(self.archetype_sigma * self._split_rng.standard_normal())
+                   for b in threat if counts[b] > 0 and threat[b] > 0}
+        total = sum(weights.values())
+        out: dict[str, Any] = {}
+        for b, n in counts.items():
+            if n == 0:
+                continue
+            damage = int(round(realized * weights[b] / total)) if total > 0 and b in weights else 0
+            out[b] = {"baseline": {"spawned": n, "damage_dealt_to_player": damage}}
+        return out
 
 
 _erf_vec = np.vectorize(math.erf)

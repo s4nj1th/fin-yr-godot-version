@@ -78,6 +78,7 @@ Defaults live in `config.py`; the main ones can be overridden in `.env`
 | `SURROGATE_KERNEL` | `isotropic` | or `ard`: one length scale per gene |
 | `PLAY_THRESHOLD` | `0` | feasibility-biased probing: play an uncertain design only if its predicted pass probability is at least this |
 | `MIN_DAMAGE_TAKEN` | `0` | lower bound on challenge: a cleared trial costing less damage fails as `too_easy` |
+| `ARCHETYPE_COST_RATIO` | `0` | per-archetype criterion: archetypes costing the player more than this times their average damage per enemy become *nemeses*; designs with more than 15% nemeses fail as `archetype_overwhelming` |
 | `EVOLUTION_DATA_DIR` | `Backend/data` | where player archives and the log are written |
 | `LLM_MUTATION_MODE` | `auto` | `auto` / `on` / `off` for LLM-guided mutation |
 
@@ -109,9 +110,9 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-135 tests: genome (enemy-only evolution, genome spaces, fixed environment,
+141 tests: genome (enemy-only evolution, genome spaces, fixed environment,
 sanitization, old archives), surrogate (epistemic/noise split, window, ARD),
 evolution manager (bootstrap, both gates, parent filtering, remedies,
-settings, players, persistence), HTTP API and study endpoints, simulated
+per-archetype criterion, settings, players, persistence), HTTP API and study endpoints, simulated
 player, study export and analysis, LLM-output parsing, behaviour analytics. End-to-end tests with the real game:
 [`docs/INTEGRATION_TESTING.md`](../docs/INTEGRATION_TESTING.md).
