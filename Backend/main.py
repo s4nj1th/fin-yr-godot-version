@@ -124,13 +124,15 @@ def study_session(request: StudySessionRequest) -> StudySessionResponse:
     """Starts a study session: assigns the counterbalanced condition and the
     player id whose archive this session trains."""
     participant_id = _participant(request.participant_id)
-    condition = study.condition_for(participant_id, request.session_number)
+    condition = study.condition_for(participant_id, request.session_number, request.study)
     player_id = study.player_id_for(participant_id, condition)
-    players.get(player_id, settings=study.CONDITIONS[condition])
+    director = study.DIRECTOR_ON[condition]
+    players.get(player_id, settings=study.settings_for(participant_id, condition, request.study))
     study.append_record("sessions", {"participant_id": participant_id, "session_number": request.session_number,
-                                     "condition": condition, "player_id": player_id})
+                                     "study": request.study, "condition": condition, "player_id": player_id,
+                                     "director": director})
     return StudySessionResponse(participant_id=participant_id, session_number=request.session_number,
-                                condition=condition, player_id=player_id)
+                                condition=condition, player_id=player_id, study=request.study, director=director)
 
 
 @app.get("/api/study/questionnaire")
@@ -149,7 +151,7 @@ def submit_questionnaire(request: QuestionnaireRequest) -> dict:
 
 
 @app.post("/api/study/replay_sample")
-def replay_sample(player_id: str = Query(...), n: int = Query(study.REPLAY_SAMPLE_SIZE, ge=1, le=10)) -> dict:
+def replay_sample(player_id: str = Query(...), n: int = Query(study.REPLAY_SAMPLE_SIZE, ge=1, le=20)) -> dict:
     """Archived designs for the end-of-session replay block."""
     return {"player_id": player_id, "designs": replays.sample(_player(player_id), n)}
 

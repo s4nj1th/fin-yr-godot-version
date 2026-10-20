@@ -145,6 +145,45 @@ parallel (each against its own stand-in backend, `--backend-url`), and
 compares the damage taken with the simulator's predicted threat.
 **Result: Spearman ρ = 0.79 over 160 trials.**
 
+## 5. The tactical director in the game — `tools/evaluate_director.py`
+
+```bash
+Backend/.venv/bin/python tools/evaluate_director.py --sessions 30 --trials 15 \
+    --out Review_2/paper/experiments/results/director_eval.jsonl
+```
+
+Plays sessions of 15 consecutive random designs with the exit bot in the
+"hide" playstyle (`--bot-style=hide`: it steps out of the line of sight of
+tracking enemies within six tiles, the habit the stealth countermeasure
+reacts to), with the director off or with one of two stealth
+countermeasures — `search` (enemies that lose the player search where they
+last saw them) or `intercept` (they head for a cell ahead of the player on
+the route to the exit and wait there) — given to new enemies only or also
+re-tasked live (`--director=off|spawn|live --stealth=search|intercept`).
+Session *s* plays the same designs in every condition. **Result (30
+sessions per condition):** in the first trial, before any enemy can spawn
+with an order, every condition without live re-tasking played exactly as
+with the director off in all 30 sessions, which confirms the pairing.
+Damage and deaths did not change detectably. The exit rate fell from 92%
+to 83–85% with intercept (Holm-corrected p = 0.006 and 0.017), whose
+crossings also took longer (101 s → 114 s, Holm p = 0.001); search's
+effects (86–87% exit rate) did not survive the correction. Intercept is
+therefore the default.
+
+## 6. Both human studies with scripted participants — `tools/run_bot_study.py`
+
+```bash
+Backend/.venv/bin/python tools/run_bot_study.py --minutes 30 \
+    --out Review_2/paper/experiments/results/bot_study
+```
+
+Runs the full protocol ([HUMAN_STUDY_PROTOCOL.md](HUMAN_STUDY_PROTOCOL.md))
+with 12 scripted participants (three reaction skills × two playstyles, two
+each), four sessions each, against the real backend on port 8001, then
+exports and analyses the data with the study's own scripts. **Result: all
+48 sessions completed** with a stored questionnaire; the results are in
+section 7 of the protocol. Not human data.
+
 ## What these tests do not show
 
 The bot knows where the exit is, walks straight to it and does not fight on

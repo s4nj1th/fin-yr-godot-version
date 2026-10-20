@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace DungeonCrawler.AI;
 
@@ -57,6 +58,57 @@ public static class BotPlayerPolicy
         }
 
         return GridPathfinder.FindNextStepDirection(playerPos, exitPos, walkableGrid);
+    }
+
+    /// <summary>
+    /// The "hide" playstyle: a step that takes the player out of the line of
+    /// sight of every enemy currently watching it, preferring the step that
+    /// keeps it closest to the exit. Zero if no neighbouring tile is hidden
+    /// from all of them. Used to evaluate the tactical director's stealth
+    /// countermeasure with a scripted player (tools/evaluate_director.py).
+    /// </summary>
+    public static GridPoint HideStep(GridPoint playerPos, GridPoint exitPos, IReadOnlyList<GridPoint> watchers,
+        int[,] walkableGrid, Func<GridPoint, bool>? isOccupied = null)
+    {
+        if (watchers.Count == 0)
+        {
+            return GridPoint.Zero;
+        }
+
+        GridPoint best = GridPoint.Zero;
+        int bestDistance = int.MaxValue;
+        foreach (GridPoint direction in Directions)
+        {
+            GridPoint candidate = playerPos + direction;
+            if (!IsWalkable(candidate, walkableGrid) || (isOccupied?.Invoke(candidate) ?? false))
+            {
+                continue;
+            }
+
+            bool hidden = true;
+            foreach (GridPoint watcher in watchers)
+            {
+                if (GridLineOfSight.HasLineOfSight(watcher, candidate, walkableGrid))
+                {
+                    hidden = false;
+                    break;
+                }
+            }
+
+            if (!hidden)
+            {
+                continue;
+            }
+
+            int distance = ManhattanDistance(candidate, exitPos);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = direction;
+            }
+        }
+
+        return best;
     }
 
     private static GridPoint FindRetreatStep(GridPoint from, GridPoint threat, int[,] walkableGrid)

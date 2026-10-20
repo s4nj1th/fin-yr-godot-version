@@ -107,6 +107,22 @@ SURROGATE_GATE_UNCERTAINTY = os.getenv("SURROGATE_GATE_UNCERTAINTY", "epistemic"
 # for every gene) or "ard" (one per gene, so genes that barely matter can be
 # ignored).
 SURROGATE_KERNEL = os.getenv("SURROGATE_KERNEL", "isotropic").lower()
+# The surrogate model:
+#   "regressor" (default) -> a GP regressor on the 0/1 labels with a white-noise
+#                            term; its epistemic std is the predictive std minus
+#                            the fitted noise
+#   "classifier"          -> GP classification (Laplace approximation): the
+#                            outcome noise is the Bernoulli likelihood, and the
+#                            epistemic std is the std of the pass probability
+#                            under the latent posterior
+SURROGATE_MODEL = os.getenv("SURROGATE_MODEL", "regressor").lower()
+# Stretch fallback: a player who clears every played design gives the
+# surrogate only one outcome, so it never trains and the gate never acts.
+# After this many clears in a row with no failure yet, the gated condition
+# serves one stretched design (an archived design with every scalar gene
+# moved toward its upper bound: halfway, then 3/4, 7/8, ... of the way for
+# later stretches). 0 = off.
+STRETCH_AFTER_CLEARS = int(os.getenv("STRETCH_AFTER_CLEARS", "8"))
 # Train the surrogate on only the most recent N real outcomes (0 = all).
 # A small window lets it track a player whose skill changes mid-session.
 SURROGATE_WINDOW = int(os.getenv("SURROGATE_WINDOW", "0"))
@@ -129,9 +145,19 @@ PLAY_THRESHOLD = float(os.getenv("PLAY_THRESHOLD", "0"))
 # the player's *nemesis* once, over at least ARCHETYPE_MIN_OBSERVED enemies,
 # it has cost them more than ARCHETYPE_COST_RATIO times their average damage
 # per enemy. A design in which nemeses make up more than NEMESIS_MAX_SHARE of
-# the behaviour mix fails the criterion ("archetype_overwhelming"), is no
-# longer proposed, and is not used as a parent. 0 = off.
+# the behaviour mix is no longer proposed, is not used as a parent, and
+# leaves the archive in force. 0 = off.
+# ARCHETYPE_RULE says how such a design is treated when it was played:
+#   "filter" (default) -> composition is never a verdict on a trial: the trial
+#                         passes or fails on survival alone, and the surrogate
+#                         learns survival; composition only filters proposals,
+#                         parents and the archive in force, since it is a known
+#                         function of the design and the player's nemeses
+#   "verdict"          -> a cleared trial fails ("archetype_overwhelming") under
+#                         the nemeses known after it, and the surrogate learns
+#                         that verdict (the first version of the criterion)
 ARCHETYPE_COST_RATIO = float(os.getenv("ARCHETYPE_COST_RATIO", "0"))
+ARCHETYPE_RULE = os.getenv("ARCHETYPE_RULE", "filter").lower()
 ARCHETYPE_MIN_OBSERVED = 15
 NEMESIS_MAX_SHARE = 0.15
 

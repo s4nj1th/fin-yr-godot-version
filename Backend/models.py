@@ -100,6 +100,7 @@ class ReportOutcomeResponse(BaseModel):
 class StudySessionRequest(BaseModel):
     participant_id: str
     session_number: Literal[1, 2]
+    study: Literal["search", "director"] = "search"
 
 
 class StudySessionResponse(BaseModel):
@@ -107,6 +108,8 @@ class StudySessionResponse(BaseModel):
     session_number: int
     condition: str
     player_id: str
+    study: str = "search"
+    director: bool = False
 
 
 class QuestionnaireRequest(BaseModel):

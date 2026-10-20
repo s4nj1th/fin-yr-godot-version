@@ -87,4 +87,35 @@ public class BotPlayerPolicyTests
 
         Assert.Equal(new GridPoint(1, 0), step);
     }
+
+    [Fact]
+    public void HideStep_StepsAroundACorner_OutOfSight()
+    {
+        // A wall column at x = 4 (rows 0-3) leaves only the bottom row open.
+        // The watcher at (6, 4) sees the player at (3, 4) along that row; the
+        // tile (3, 3), around the corner, is hidden behind the wall.
+        int[,] grid = OpenRoom(7, 5);
+        for (int y = 0; y < 4; y++)
+        {
+            grid[y, 4] = 0;
+        }
+
+        var watcher = new GridPoint(6, 4);
+        var player = new GridPoint(3, 4);
+        Assert.True(GridLineOfSight.HasLineOfSight(watcher, player, grid));
+        Assert.False(GridLineOfSight.HasLineOfSight(watcher, new GridPoint(3, 3), grid));
+
+        GridPoint step = BotPlayerPolicy.HideStep(player, new GridPoint(0, 0), new[] { watcher }, grid);
+
+        Assert.Equal(new GridPoint(0, -1), step);
+    }
+
+    [Fact]
+    public void HideStep_DoesNothingWithoutWatchers_OrWithoutCover()
+    {
+        int[,] grid = OpenRoom(5, 5);
+        Assert.Equal(GridPoint.Zero, BotPlayerPolicy.HideStep(new GridPoint(2, 2), new GridPoint(0, 0), new GridPoint[0], grid));
+        // In an open room every neighbour stays in sight of a nearby watcher.
+        Assert.Equal(GridPoint.Zero, BotPlayerPolicy.HideStep(new GridPoint(2, 2), new GridPoint(0, 0), new[] { new GridPoint(2, 0) }, grid));
+    }
 }

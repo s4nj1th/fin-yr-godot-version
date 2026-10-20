@@ -52,17 +52,30 @@ never trains a human player's model.
   dungeon (`tools/validate_simulator.py`).
 - **Selection that sees composition.** An optional per-archetype criterion
   learns, from each player's own telemetry, which enemy types they handle
-  badly and keeps those types from dominating their encounters.
-- **Live re-tasking.** The tactical director now updates enemies already on
-  the map when it switches a countermeasure on or off, not only new spawns.
+  badly and keeps those types from dominating their encounters. It filters
+  what is proposed and served instead of failing cleared trials, so together
+  with feasibility-biased probing it *lowers* how often the player fails.
+- **Live re-tasking and interception.** The tactical director now updates
+  enemies already on the map when it switches a countermeasure on or off,
+  not only new spawns, and its stealth countermeasure sends enemies to
+  intercept a hiding player on the route to the exit; both are evaluated in
+  the game (`tools/evaluate_director.py`).
+- **A better-calibrated surrogate and players who never fail.** GP
+  classification is available as an alternative surrogate
+  (`SURROGATE_MODEL=classifier`), and a stretch fallback serves harder
+  versions of cleared designs to a player who has not failed yet, so the
+  surrogate can train.
 - **Stronger evaluation.** The search is compared with a DDA staircase,
   MAP-Elites and Bayesian-optimization difficulty targeting, in both the
   old six-gene and the new twelve-gene space, with two remedies for the
   player's experience (feasibility-biased probing, a lower bound on challenge).
 - **Human-study tooling.** `--study` runs a complete session — consent,
-  briefing, play, replay block, questionnaire — against counterbalanced
-  conditions, with export and analysis scripts and a protocol
-  ([HUMAN_STUDY_PROTOCOL.md](docs/HUMAN_STUDY_PROTOCOL.md)).
+  briefing, play, replay block, questionnaire — for two studies (the
+  surrogate; the tactical director) against counterbalanced conditions, with
+  export and analysis scripts and a protocol
+  ([HUMAN_STUDY_PROTOCOL.md](docs/HUMAN_STUDY_PROTOCOL.md)). Both studies
+  have been run end to end with twelve scripted participants
+  (`tools/run_bot_study.py`).
 
 ## Architecture
 
@@ -133,8 +146,11 @@ the same map, without evolution.
 godot-mono --path . -- --player=alice                  # play as player "alice"
 godot-mono --path . -- --autoplay --autoplay-max-trials=20 --autoplay-timescale=8   # bot, as player "bot"
 godot-mono --path . -- --study                         # one human-study session (needs the backend)
+godot-mono --path . -- --autoplay --bot-style=hide --director=spawn --stealth=search   # bot that hides; director off|spawn|live; countermeasure intercept (default)|search
 godot-mono --path . res://Scenes/EnemyGallery.tscn     # see every enemy type
 python tools/run_duels.py                              # re-measure the enemies (writes Backend/duel_table.json)
+Backend/.venv/bin/python tools/evaluate_director.py --sessions 30 --trials 15   # the director in the game
+Backend/.venv/bin/python tools/run_bot_study.py --minutes 30                   # both studies, 12 scripted participants
 ```
 
 **Without the game** (simulated player, from `Backend/`):
@@ -147,8 +163,8 @@ python generate_metrics_plots.py --player sim-intermediate     # charts in data/
 ## Tests
 
 ```bash
-cd Backend && pip install -r requirements-dev.txt && pytest     # 141 tests
-cd Tests && dotnet test                                         # 76 tests
+cd Backend && pip install -r requirements-dev.txt && pytest     # 154 tests
+cd Tests && dotnet test                                         # 82 tests
 python tools/integration_test.py --trials 10                    # real game + real backend
 python tools/integration_test.py --study                        # a complete automated study session
 ```
@@ -172,7 +188,13 @@ Headline findings (50 runs per condition, intermediate player unless stated):
 | Six vs. twelve genes | the gate's gain holds (9.4× and 8.3×) |
 | Cold start | in the six-gene space the original default design leaves 28 of 50 novice runs with nothing accepted; random designs until the first pass leave none |
 | Adaptation is personal — in difficulty | an expert's designs are failed 59% of the time by a novice, against 10% for the novice's own |
-| …and, with the per-archetype criterion, in composition | pass/fail alone leaves the enemy mix unchanged; pooling each player's damage per enemy type finds 88–94% of the types they handle badly and at least halves their share of the archive |
+| …and, with the per-archetype criterion, in composition | pass/fail alone leaves the enemy mix unchanged; pooling each player's damage per enemy type finds 89–98% of the types they handle badly and at least halves their share of the archive |
+| …without failing more trials | applied as a filter instead of a verdict on cleared trials and combined with probing, it lowers the share of played designs the player fails below the gate alone (29% → 12% for a player who counters telegraphs, 30% → 21% for one who does not) |
+| The tactical director in the game | against a bot that hides, enemies that *intercept* it on the route to the exit cut the share of trials that reach the exit from 92% to 83–85% and slow its crossings (Holm-corrected p ≤ 0.017); searching where it was last seen had no effect that survived correction (30 paired sessions per condition) |
+| Both human studies, with scripted participants | a first dry run found that a player who never fails gets no benefit from the gate and that four replays per session are too few; with the stretch fallback and twelve replays, the gate cut playthroughs per archived design from 1.07 to 0.16 (p = 0.002) and the surrogate trained for every participant. A simulation-based power analysis sets the human study at 48 participants. Not human data |
+| GP classification | a better-calibrated surrogate: less contaminated archives at every gate threshold; at threshold 0.35 the same archive size and failure rate as the regressor's default |
+| Players who never fail | without a failure the surrogate cannot train; a stretch fallback (harder versions of cleared designs) let it train within a session in every run for a player who clears 97% of designs, tripling the archive |
+| Other layouts | the simulator orders the bot's damage on four other maps as well as on the evaluation map (ρ = 0.81–0.84) |
 | An archive never forgets | after a drop to novice skill, contamination jumps from 7% to 32%; a windowed surrogate lowers the played failure rate from 63% to 39% |
 | LLM-guided mutation | no detectable benefit over Gaussian mutation (83% vs 86% offspring pass rate, 10-seed pilot) |
 

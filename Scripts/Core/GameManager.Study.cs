@@ -14,13 +14,16 @@ namespace DungeonCrawler.Core;
 /// participant plays for the session length (the dungeon in progress when
 /// time runs out is finished); then replays a sample of their archive, whose
 /// outcomes are recorded without changing it; then answers the
-/// questionnaire. The adaptive tactical director is off in study mode, so
-/// within-session adaptation cannot confound the comparison of conditions.
+/// questionnaire. The adaptive tactical director is off in study 1, so
+/// within-session adaptation cannot confound the comparison of conditions;
+/// study 2 turns it on in one of its two conditions.
 /// </summary>
 public partial class GameManager
 {
-	private const int ReplayBlockSize = 4;
+	private const int ReplayBlockSize = 12;
 	private bool _studyMode;
+	// Director study sessions keep the tactical director on (live re-tasking).
+	private bool _studyDirectorOn;
 	private double _studyMinutes = 30;
 	private StudyFlow? _studyFlow;
 	private string _studyParticipant = "";
@@ -76,7 +79,7 @@ public partial class GameManager
 		}
 
 		_studyFlow = new StudyFlow();
-		_studyFlow.SessionRequested += (participant, session) => _ = StartStudySessionAsync(participant, session);
+		_studyFlow.SessionRequested += (participant, session, study) => _ = StartStudySessionAsync(participant, session, study);
 		_studyFlow.QuestionnaireSubmitted += (answers, comment) => _ = SubmitStudyQuestionnaireAsync(answers, comment);
 		AddChild(_studyFlow);
 		return true;
@@ -84,9 +87,9 @@ public partial class GameManager
 
 	private bool StudyBlocksGameplay => _studyMode && (!_studyRunning || _studyFinished);
 
-	private async Task StartStudySessionAsync(string participant, int session)
+	private async Task StartStudySessionAsync(string participant, int session, string study)
 	{
-		StudySessionResponse? response = await _apiClient.StartStudySessionAsync(participant, session);
+		StudySessionResponse? response = await _apiClient.StartStudySessionAsync(participant, session, study);
 		if (response == null)
 		{
 			_studyFlow!.ShowMessage("Cannot reach the study server",
@@ -97,8 +100,10 @@ public partial class GameManager
 		_studyParticipant = participant;
 		_studySession = session;
 		PlayerId = response.PlayerId;
+		_studyDirectorOn = response.Director;
 		_studyRunning = true;
-		GD.Print($"[Study] {participant} session {session}: condition {response.Condition}, player id {PlayerId}, {_studyMinutes} min.");
+		GD.Print($"[Study] {participant} session {session} ({response.Study} study): condition {response.Condition}, " +
+			$"player id {PlayerId}, director {(response.Director ? "on" : "off")}, {_studyMinutes} min.");
 		RequestNextGenomeAndRegenerateAsync();
 	}
 

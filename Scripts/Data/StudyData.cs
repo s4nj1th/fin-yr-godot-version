@@ -9,6 +9,8 @@ public class StudySessionRequest
 {
 	[JsonPropertyName("participant_id")] public string ParticipantId { get; set; } = "";
 	[JsonPropertyName("session_number")] public int SessionNumber { get; set; } = 1;
+	// "search" (study 1: MC vs GP) or "director" (study 2: director off vs on).
+	[JsonPropertyName("study")] public string Study { get; set; } = "search";
 }
 
 public class StudySessionResponse
@@ -17,6 +19,8 @@ public class StudySessionResponse
 	[JsonPropertyName("session_number")] public int SessionNumber { get; set; }
 	[JsonPropertyName("condition")] public string Condition { get; set; } = "";
 	[JsonPropertyName("player_id")] public string PlayerId { get; set; } = "";
+	[JsonPropertyName("study")] public string Study { get; set; } = "search";
+	[JsonPropertyName("director")] public bool Director { get; set; }
 }
 
 public class QuestionnaireScale

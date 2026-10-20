@@ -176,12 +176,42 @@ the paper). To personalize *which* enemies a player meets, the backend pools
 each player's per-archetype telemetry (`enemy_behavior_breakdown`: enemies
 spawned and damage dealt) over all their played trials. An archetype that
 has cost the player more than 1.5× their average damage per enemy, over at
-least 15 enemies, becomes a *nemesis*; designs in which nemeses make up more
-than 15% of the mix fail (`archetype_overwhelming`), are no longer proposed
-and are not used as parents. In the simulation it found 88–94% of each
-player's true nemeses and at least halved their share of the archive (14% → 5% for a
-player who does not dodge, 42% → 21% for one who does), at the cost of more
-failed trials. `/api/stats` lists the current `nemeses`.
+least 15 enemies, becomes a *nemesis*. Composition is then a known function
+of a design and the nemeses, so by default (`ARCHETYPE_RULE=filter`) it is
+never a verdict on a trial: a played trial passes or fails on survival alone
+and the surrogate learns survival, while designs in which nemeses make up
+more than 15% of the mix are not proposed and leave the **archive in force**
+(`archive_in_force`: the archived designs drawn as parents and replayed). The
+first version (`ARCHETYPE_RULE=verdict`) instead failed a cleared trial as
+`archetype_overwhelming` when its design had too many of a nemesis known
+after the trial, and fed that verdict to the surrogate.
+
+In the simulation (paper, Sec. V-J) both rules cut the nemeses' share of the
+archive from 14% to 4% for a player who does not dodge and from 42% to 14%
+for one who does. The verdict raised the share of failed trials (30% → 32%
+and 29% → 41%), almost all of them trials the player had cleared, because
+the nemesis set changes after a design is proposed; probing barely helped.
+The filter lowered failed trials below the gate without the criterion (26%
+and 18%), and with feasibility-biased probing (`PLAY_THRESHOLD=0.5`) to 21%
+and 12%, with larger archives and lower contamination. `/api/stats` lists the
+current `nemeses` and the size of the archive in force.
+
+**Surrogate model** (`SURROGATE_MODEL`, default `regressor`). The
+alternative, `classifier`, is GP classification (Laplace approximation)
+whose epistemic std is that of the pass probability under the latent
+posterior. In the simulation (paper, Sec. V-I) it was
+better calibrated and gave less contaminated archives at every gate
+threshold; at a std threshold of 0.35 it matched the regressor's default
+archive size and played failure rate.
+
+**Stretch fallback** (`STRETCH_AFTER_CLEARS`, default 8). Without a failure
+the surrogate cannot train, so a gated player who never fails gets no
+benefit from it. After 8 clears in a row with no failure yet (and every 8
+after that), the gated condition serves a stretched design: an archived
+design with every scalar gene moved toward its upper bound (halfway, then
+3/4, 7/8, ...). In the simulation, for a player who clears 97% of random
+designs, the surrogate trained within a 35-playthrough session in 100% of
+runs instead of 20%, and the archive after a session grew from 118 to 388.
 
 Each player's settings (gate, kernel, remedies, per-archetype criterion,
 `use_surrogate`) are saved with their state, so a study condition survives a

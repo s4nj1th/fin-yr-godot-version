@@ -157,7 +157,7 @@ def run_study_session(args, base: str, work: str, check) -> None:
     check("the MC condition played every design (no surrogate decisions)",
           stats["auto_accepted"] + stats["auto_rejected"] == 0 and stats["use_surrogate"] is False,
           f"auto decisions = {stats['auto_accepted'] + stats['auto_rejected']}")
-    expected_replays = min(4, stats["hall_of_fame_size"])
+    expected_replays = min(12, stats["hall_of_fame_size"])
     check("the replay block replayed a sample of the archive", len(replays) == expected_replays,
           f"{len(replays)} replays, archive of {stats['hall_of_fame_size']}")
     check("replays did not change the archive or the surrogate",

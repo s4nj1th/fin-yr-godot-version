@@ -212,4 +212,19 @@ public class AdaptationDirectorTests
         AdaptationDirector.RevokeStealthCountermeasure(order);
         Assert.False(order.SearchLastKnownPosition);
     }
+
+    [Fact]
+    public void StealthCountermeasure_CanIntercept_AndRevokingClearsIt()
+    {
+        var (_, profile) = RecordRearAttacks(10);
+        var order = EnemyTacticalOrder.None();
+        AdaptationDirector.GrantStealthCountermeasure(order, profile);
+        Assert.False(order.InterceptRoute);
+
+        AdaptationDirector.GrantStealthCountermeasure(order, profile, intercept: true);
+        Assert.True(order.SearchLastKnownPosition && order.InterceptRoute);
+
+        AdaptationDirector.RevokeStealthCountermeasure(order);
+        Assert.False(order.SearchLastKnownPosition || order.InterceptRoute);
+    }
 }

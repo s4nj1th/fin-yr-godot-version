@@ -166,6 +166,19 @@ public partial class GameManager : Node3D
 	private readonly RandomNumberGenerator _botRng = new();
 	private readonly List<(EnemyController Source, HashSet<GridPoint> Cells, double ActiveAt)> _botDangers = new();
 	private readonly Dictionary<EnemyController, bool> _botFlankDecisions = new();
+	// Scripted playstyle of the exit bot: "exit" walks to the exit; "hide"
+	// also steps out of the line of sight of enemies that spot it (used to
+	// evaluate the director's stealth countermeasure, tools/evaluate_director.py).
+	private string _botStyle = "exit";
+	private const int HideTriggerDistance = 6;
+
+	// The tactical director: "live" (default) hands orders to new enemies and
+	// re-tasks nearby ones; "spawn" hands orders to new enemies only; "off"
+	// gives no orders. Set with --director=MODE; study sessions turn it off
+	// unless the session belongs to the director study.
+	private string _directorMode = "live";
+	private bool DirectorGivesOrders => _directorMode != "off" && !(_studyMode && !_studyDirectorOn);
+	private bool DirectorRetasks => _directorMode == "live" && DirectorGivesOrders;
 
 	// Whose archive the backend evolves designs for: each player gets their
 	// own archive and surrogate (Backend/adaptive_evolution.py). Set here, or
@@ -182,7 +195,9 @@ public partial class GameManager : Node3D
 	// tendencies from evidence," not from one run in isolation).
 	private readonly PlayerBehaviorTelemetry _playerTelemetry = new();
 	private readonly PlayerPlaystyleProfile _playerProfile = new();
-	private readonly AdaptationDirector _adaptationDirector = new();
+	// The stealth countermeasure intercepts the player on their route to the
+	// exit by default (--stealth=search: search where they were last seen).
+	private readonly AdaptationDirector _adaptationDirector = new() { InterceptRoute = true };
 	// Per-archetype combat counters, reset every trial (unlike the
 	// lifetime-accumulating fields above) — see docs/BEHAVIOR_ANALYTICS.md.
 	private readonly EnemyBehaviorTelemetry _behaviorTelemetry = new();
@@ -244,6 +259,22 @@ public partial class GameManager : Node3D
 					System.Globalization.CultureInfo.InvariantCulture, out float dodge))
 			{
 				BotDodgeSkill = Mathf.Clamp(dodge, 0f, 1f);
+			}
+			else if (arg.StartsWith("--bot-style=", StringComparison.Ordinal))
+			{
+				_botStyle = arg.Substring("--bot-style=".Length);
+			}
+			else if (arg.StartsWith("--stealth=", StringComparison.Ordinal))
+			{
+				string response = arg.Substring("--stealth=".Length);
+				_adaptationDirector.InterceptRoute = response == "intercept";
+				GD.Print($"[AdaptiveAI] Stealth countermeasure: {(_adaptationDirector.InterceptRoute ? "intercept" : "search")}.");
+			}
+			else if (arg.StartsWith("--director=", StringComparison.Ordinal))
+			{
+				string mode = arg.Substring("--director=".Length);
+				_directorMode = mode is "off" or "spawn" or "live" ? mode : "live";
+				GD.Print($"[AdaptiveAI] Director mode: {_directorMode}.");
 			}
 			else if (arg.StartsWith("--backend-url=", StringComparison.Ordinal))
 			{
@@ -506,6 +537,11 @@ public partial class GameManager : Node3D
 
 		_trialReported = true;
 		_isFetchingGenome = true;
+		if (EnemyController.InterceptsPlanned > 0)
+		{
+			GD.Print($"[AdaptiveAI] Intercepts planned this trial: {EnemyController.InterceptsPlanned}.");
+		}
+		EnemyController.InterceptsPlanned = 0;
 
 		try
 		{
@@ -1413,8 +1449,9 @@ void fragment() {
 			IsTileOccupied = IsEnemyAt
 		};
 		enemy.Initialize(tile, archetype, elite);
-		// Study sessions switch the tactical director off (see GameManager.Study.cs).
-		enemy.TacticalOrder = _studyMode ? EnemyTacticalOrder.None() : _adaptationDirector.CreateOrderForNewEnemy(_playerProfile);
+		// The director can be off (study sessions, --director=off; see GameManager.Study.cs).
+		enemy.TacticalOrder = DirectorGivesOrders ? _adaptationDirector.CreateOrderForNewEnemy(_playerProfile) : EnemyTacticalOrder.None();
+		enemy.RouteGoal = _exitPos.X >= 0 ? ToGridPoint(_exitPos) : null;
 		bool isAdapted = IsAdapted(enemy);
 		// Captured by value so each hit is attributed to the archetype that
 		// actually threw it, for the per-archetype telemetry. Whether it is
@@ -1448,7 +1485,7 @@ void fragment() {
 	{
 		_adaptationDirector.Reevaluate(_playerTelemetry, _playerProfile);
 		AdaptationDirector.CountermeasureChanges changes = _adaptationDirector.ConsumeChanges();
-		if (_studyMode || !changes.Any)
+		if (!DirectorRetasks || !changes.Any)
 		{
 			return;
 		}
@@ -1481,7 +1518,7 @@ void fragment() {
 		foreach ((bool activated, string name, Action<EnemyController> grant) in new (bool, string, Action<EnemyController>)[]
 		{
 			(changes.RearActivated, "rear defence", e => AdaptationDirector.GrantRearDefense(e.TacticalOrder, _playerProfile)),
-			(changes.StealthActivated, "stealth countermeasure", e => AdaptationDirector.GrantStealthCountermeasure(e.TacticalOrder, _playerProfile)),
+			(changes.StealthActivated, "stealth countermeasure", e => AdaptationDirector.GrantStealthCountermeasure(e.TacticalOrder, _playerProfile, _adaptationDirector.InterceptRoute)),
 		})
 		{
 			if (!activated)
@@ -1621,6 +1658,21 @@ void fragment() {
 		else
 		{
 			step = danger.Contains(player) ? FighterBotPolicy.DodgeStep(player, target, danger, _tiles, occupied) : GridPoint.Zero;
+			if (step == GridPoint.Zero && _botStyle == "hide")
+			{
+				var watchers = new List<GridPoint>();
+				foreach (EnemyController enemy in _enemies)
+				{
+					if (enemy.CurrentHp > 0 && enemy.Perception.State == PerceptionState.Tracking
+						&& Math.Abs(enemy.GridPos.X - _playerPos.X) + Math.Abs(enemy.GridPos.Y - _playerPos.Y) <= HideTriggerDistance)
+					{
+						watchers.Add(ToGridPoint(enemy.GridPos));
+					}
+				}
+
+				step = BotPlayerPolicy.HideStep(player, ToGridPoint(_exitPos), watchers, _tiles, occupied);
+			}
+
 			if (step == GridPoint.Zero)
 			{
 				step = BotPlayerPolicy.DecideMove(player, ToGridPoint(_exitPos), target?.Position,

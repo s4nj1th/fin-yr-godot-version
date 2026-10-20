@@ -12,6 +12,9 @@ public sealed class EnemyTacticalOrder
 {
     public bool GuardRear;
     public bool SearchLastKnownPosition;
+    // The intercept form of the stealth countermeasure (InterceptPlanner):
+    // head for a cell ahead of the player on their route to the exit.
+    public bool InterceptRoute;
     public bool PreferAlternateRoute;
     public float TurnSpeedMultiplier = 1f;
     public float SearchRadius = 4f;

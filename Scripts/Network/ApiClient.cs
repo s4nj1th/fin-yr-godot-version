@@ -127,8 +127,9 @@ public partial class ApiClient : Node
 		}
 	}
 
-	public Task<StudySessionResponse?> StartStudySessionAsync(string participantId, int sessionNumber) =>
-		PostJsonAsync<StudySessionResponse>("/api/study/session", new StudySessionRequest { ParticipantId = participantId, SessionNumber = sessionNumber });
+	public Task<StudySessionResponse?> StartStudySessionAsync(string participantId, int sessionNumber, string study) =>
+		PostJsonAsync<StudySessionResponse>("/api/study/session",
+			new StudySessionRequest { ParticipantId = participantId, SessionNumber = sessionNumber, Study = study });
 
 	public async Task<Questionnaire?> GetQuestionnaireAsync()
 	{

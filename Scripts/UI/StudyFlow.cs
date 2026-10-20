@@ -15,13 +15,14 @@ namespace DungeonCrawler.UI;
 /// questionnaire and a closing screen. The session itself is run by
 /// GameManager (Scripts/Core/GameManager.Study.cs).
 ///
-/// For an unattended end-to-end test, `--study-auto=P01:1` fills in the
-/// participant, consents, skips the briefing and answers the questionnaire
-/// with the scale midpoint.
+/// For an unattended run with a scripted player, `--study-auto=P01:1` (or
+/// `P01:1:director` for the director study) fills in the participant,
+/// consents, skips the briefing and answers the questionnaire with the
+/// scale midpoint.
 /// </summary>
 public partial class StudyFlow : CanvasLayer
 {
-	public event Action<string, int>? SessionRequested;
+	public event Action<string, int, string>? SessionRequested;
 	public event Action<Dictionary<string, int>, string>? QuestionnaireSubmitted;
 
 	private static readonly Color PanelBg = new(0.043f, 0.059f, 0.102f, 0.97f);
@@ -36,6 +37,7 @@ public partial class StudyFlow : CanvasLayer
 	private VBoxContainer _content = null!;
 	private string? _autoParticipant;
 	private int _autoSession;
+	private string _autoStudy = "search";
 
 	public bool IsAutomatic => _autoParticipant != null;
 
@@ -50,6 +52,7 @@ public partial class StudyFlow : CanvasLayer
 				string[] parts = arg.Substring("--study-auto=".Length).Split(':');
 				_autoParticipant = parts[0];
 				_autoSession = parts.Length > 1 && int.TryParse(parts[1], out int n) ? n : 1;
+				_autoStudy = parts.Length > 2 && parts[2] == "director" ? "director" : "search";
 			}
 		}
 
@@ -78,7 +81,7 @@ public partial class StudyFlow : CanvasLayer
 
 		if (IsAutomatic)
 		{
-			GD.Print($"[Study] Automatic run as {_autoParticipant}, session {_autoSession}.");
+			GD.Print($"[Study] Automatic run as {_autoParticipant}, session {_autoSession}, {_autoStudy} study.");
 			Hide();
 			CallDeferred(nameof(EmitAutomaticSession));
 			return;
@@ -87,7 +90,7 @@ public partial class StudyFlow : CanvasLayer
 		ShowSetup();
 	}
 
-	private void EmitAutomaticSession() => SessionRequested?.Invoke(_autoParticipant!, _autoSession);
+	private void EmitAutomaticSession() => SessionRequested?.Invoke(_autoParticipant!, _autoSession, _autoStudy);
 
 	// --- Screens -------------------------------------------------------------
 
@@ -103,6 +106,10 @@ public partial class StudyFlow : CanvasLayer
 		session.AddItem("Session 1", 1);
 		session.AddItem("Session 2", 2);
 		_content.AddChild(session);
+		var studyKind = new OptionButton();
+		studyKind.AddItem("Study 1: enemy evolution", 0);
+		studyKind.AddItem("Study 2: tactical director", 1);
+		_content.AddChild(studyKind);
 		if (error != null)
 		{
 			Text(error, Color.FromHtml("#f87171"));
@@ -117,11 +124,11 @@ public partial class StudyFlow : CanvasLayer
 				return;
 			}
 
-			ShowConsent(participant, session.GetSelectedId());
+			ShowConsent(participant, session.GetSelectedId(), studyKind.GetSelectedId() == 1 ? "director" : "search");
 		});
 	}
 
-	private void ShowConsent(string participant, int sessionNumber)
+	private void ShowConsent(string participant, int sessionNumber, string study)
 	{
 		Clear();
 		Title("Information for participants");
@@ -148,7 +155,7 @@ public partial class StudyFlow : CanvasLayer
 		row.AddChild(decline);
 		var proceed = new Button { Text = "Continue", Disabled = true };
 		agree.Toggled += on => proceed.Disabled = !on;
-		proceed.Pressed += () => ShowBriefing(participant, sessionNumber);
+		proceed.Pressed += () => ShowBriefing(participant, sessionNumber, study);
 		row.AddChild(proceed);
 	}
 
@@ -159,7 +166,7 @@ public partial class StudyFlow : CanvasLayer
 		Text("No data has been recorded. Please tell the researcher.");
 	}
 
-	private void ShowBriefing(string participant, int sessionNumber)
+	private void ShowBriefing(string participant, int sessionNumber, string study)
 	{
 		Clear();
 		Title("How to play");
@@ -185,7 +192,7 @@ public partial class StudyFlow : CanvasLayer
 		Button("Start playing", () =>
 		{
 			Hide();
-			SessionRequested?.Invoke(participant, sessionNumber);
+			SessionRequested?.Invoke(participant, sessionNumber, study);
 		});
 	}
 

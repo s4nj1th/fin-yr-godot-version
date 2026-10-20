@@ -76,6 +76,17 @@ public partial class EnemyController : Node3D
 	private readonly List<Vector2I> _telegraphCells = new();
 	private PerceptionState _previousPerceptionState = PerceptionState.Unaware;
 	private bool _lineOfSightJustLost;
+	// The intercept countermeasure: where to wait for the player, and for how
+	// much longer (set when the enemy loses sight of the player).
+	private const double InterceptHoldSeconds = 20.0;
+	private GridPoint _interceptPoint;
+	private double _interceptTimeLeft;
+
+	/// <summary>Intercept points planned by all enemies since the last reset (logged per trial).</summary>
+	public static int InterceptsPlanned;
+
+	/// <summary>Where the player is heading (the exit); null when there is none (duel arena).</summary>
+	public GridPoint? RouteGoal { get; set; }
 	private EnemyVisuals _visuals = null!;
 	private Node3D _nnWallRoot = null!;
 	private TelegraphFx? _telegraph;
@@ -234,6 +245,21 @@ public partial class EnemyController : Node3D
 		if (_previousPerceptionState == PerceptionState.Tracking && Perception.State != PerceptionState.Tracking)
 		{
 			_lineOfSightJustLost = true;
+			if (TacticalOrder.InterceptRoute && RouteGoal is GridPoint goal)
+			{
+				_interceptPoint = InterceptPlanner.ChooseInterceptPoint(ToGridPoint(GridPos),
+					Perception.LastKnownPlayerPosition, goal, walkableGrid);
+				_interceptTimeLeft = InterceptHoldSeconds;
+				InterceptsPlanned++;
+			}
+		}
+		if (Perception.State == PerceptionState.Tracking || !TacticalOrder.InterceptRoute)
+		{
+			_interceptTimeLeft = 0.0;
+		}
+		else
+		{
+			_interceptTimeLeft = Math.Max(0.0, _interceptTimeLeft - delta);
 		}
 		_previousPerceptionState = Perception.State;
 
@@ -578,6 +604,17 @@ public partial class EnemyController : Node3D
 		// Adaptive stealth countermeasure (docs/ENEMY_AI_ADAPTATION_PLAN.md
 		// sections 7 and 11): only enemies with the SearchLastKnownPosition
 		// order deviate, and only while they have lost the player.
+		// Intercept: go to the cell ahead of the player on their route to the
+		// exit, then wait there in ambush until the player shows up or the
+		// hold expires.
+		if (_interceptTimeLeft > 0.0)
+		{
+			GridPoint here = ToGridPoint(GridPos);
+			return here == _interceptPoint
+				? Vector2I.Zero
+				: ToVector2I(GridPathfinder.FindNextStepDirection(here, _interceptPoint, walkableGrid));
+		}
+
 		if (TacticalOrder.SearchLastKnownPosition
 			&& Perception.State is PerceptionState.Investigating or PerceptionState.Searching)
 		{

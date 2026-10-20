@@ -34,7 +34,7 @@ Every endpoint takes an optional `player_id` query parameter (default
 | GET | `/api/config` | the evolved genes and their bounds, the fixed environment, gate settings, minimal criterion |
 | POST | `/api/next_candidate` | the next design to play, with the surrogate's estimate (`prob`, `std`, `epistemic_std`) when it was consulted |
 | POST | `/api/report_outcome` | body `{genome_id, telemetry, evaluator_type?, player_id?}`; returns `{passed, hall_of_fame_size, fail_reason, player_id}` |
-| POST | `/api/study/session` | body `{participant_id, session_number}`; assigns the counterbalanced condition and returns the session's `player_id` |
+| POST | `/api/study/session` | body `{participant_id, session_number, study}` (`study`: `search` or `director`); assigns the counterbalanced condition and returns the session's `player_id`, `condition` and whether the tactical `director` is on. Study 2 serves both of a participant's sessions the same fixed sequence of random designs |
 | GET / POST | `/api/study/questionnaire` | the in-game questionnaire items / store one session's answers |
 | POST | `/api/study/replay_sample` | `?player_id=&n=`: archived designs for the end-of-session replay block |
 | POST | `/api/study/replay_outcome` | outcome of a replayed design; recorded only, never changes the archive or surrogate |
@@ -76,9 +76,12 @@ Defaults live in `config.py`; the main ones can be overridden in `.env`
 | `MAP_SEED` | `123` | the fixed dungeon layout |
 | `GENOME_SPACE` | `full` | `full` (12 genes) or `legacy` (the original 6) |
 | `SURROGATE_KERNEL` | `isotropic` | or `ard`: one length scale per gene |
+| `SURROGATE_MODEL` | `regressor` | or `classifier`: GP classification (Laplace), whose epistemic std is that of the pass probability under the latent posterior |
+| `STRETCH_AFTER_CLEARS` | `8` | stretch fallback: after this many clears with no failure yet, the gated condition serves an archived design with every scalar gene moved halfway to its upper bound, so the surrogate sees a failure and can train; `0` = off |
 | `PLAY_THRESHOLD` | `0` | feasibility-biased probing: play an uncertain design only if its predicted pass probability is at least this |
 | `MIN_DAMAGE_TAKEN` | `0` | lower bound on challenge: a cleared trial costing less damage fails as `too_easy` |
-| `ARCHETYPE_COST_RATIO` | `0` | per-archetype criterion: archetypes costing the player more than this times their average damage per enemy become *nemeses*; designs with more than 15% nemeses fail as `archetype_overwhelming` |
+| `ARCHETYPE_COST_RATIO` | `0` | per-archetype criterion: archetypes costing the player more than this times their average damage per enemy become *nemeses*; designs with more than 15% nemeses are not proposed and leave the archive in force |
+| `ARCHETYPE_RULE` | `filter` | `filter`: trials pass or fail on survival and the surrogate learns survival; `verdict`: a cleared trial with too many nemeses fails as `archetype_overwhelming` (the first version) |
 | `EVOLUTION_DATA_DIR` | `Backend/data` | where player archives and the log are written |
 | `LLM_MUTATION_MODE` | `auto` | `auto` / `on` / `off` for LLM-guided mutation |
 

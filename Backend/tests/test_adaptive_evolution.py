@@ -500,8 +500,8 @@ class TestPerArchetypeCriterion:
             melee_shield=(config.ARCHETYPE_MIN_OBSERVED - 1, 500), melee_chaser=(30, 30))})
         assert mgr.nemeses == set()
 
-    def test_a_design_with_too_many_nemeses_fails_and_is_not_proposed(self):
-        mgr = AdaptiveEvolutionManager("ac-fail", archetype_ratio=1.5, persist=False)
+    def test_verdict_rule_fails_a_cleared_design_with_too_many_nemeses(self):
+        mgr = AdaptiveEvolutionManager("ac-fail", archetype_ratio=1.5, archetype_rule="verdict", persist=False)
         mgr._record_archetypes({"enemy_behavior_breakdown": breakdown(
             melee_shield=(20, 400), melee_chaser=(20, 100), ranged_kite=(20, 100))})
         heavy = design_with(0.4)
@@ -515,6 +515,31 @@ class TestPerArchetypeCriterion:
         mgr.hall_of_fame = [design_with(0.4), design_with(0.1)]
         assert all(not mgr._exceeds_nemesis_share(p["params"]) for p in mgr._parents())
 
+    def test_filter_rule_judges_survival_and_filters_the_archive(self):
+        mgr = AdaptiveEvolutionManager("ac-filter", archetype_ratio=1.5, persist=False)
+        assert mgr.archetype_rule == "filter"
+        mgr._record_archetypes({"enemy_behavior_breakdown": breakdown(
+            melee_shield=(20, 400), melee_chaser=(20, 100), ranged_kite=(20, 100))})
+        heavy = design_with(0.4)
+        mgr.pending[heavy["id"]] = heavy
+        # A cleared trial passes on survival, and the surrogate learns survival...
+        assert mgr.report_outcome(heavy["id"], make_telemetry()) == (True, None)
+        assert mgr.surrogate.y_train[-1] == 1.0
+        # ...but the design is not in force: it is neither a parent nor replayed.
+        light = design_with(0.1)
+        mgr.hall_of_fame.append(light)
+        assert mgr.archive_in_force == [light]
+        assert mgr._parents() == [light]
+        assert mgr.stats["archive_in_force"] == 1 and mgr.stats["hall_of_fame_size"] == 2
+        # Proposals with too many nemeses are skipped.
+        for _ in range(20):
+            candidate, _ = mgr.get_next_candidate()
+            assert not mgr._exceeds_nemesis_share(candidate["params"])
+
+    def test_unknown_archetype_rule_is_rejected(self):
+        with pytest.raises(ValueError):
+            AdaptiveEvolutionManager("ac-bad", archetype_rule="sometimes", persist=False)
+
     def test_the_record_survives_a_restart(self):
         mgr = AdaptiveEvolutionManager("ac-save", archetype_ratio=1.5)
         candidate, _ = mgr.get_next_candidate()
@@ -523,3 +548,46 @@ class TestPerArchetypeCriterion:
         reloaded = PlayerRegistry().get("ac-save")
         assert reloaded.archetype_record == {"melee_shield": [20, 400], "melee_chaser": [20, 100]}
         assert reloaded.archetype_ratio == 1.5
+
+
+# --- Stretch fallback for players who never fail ----------------------------
+
+
+class TestStretchFallback:
+    def play_clears(self, mgr, n):
+        served = []
+        for _ in range(n):
+            candidate, _ = mgr.get_next_candidate()
+            served.append(candidate)
+            mgr.report_outcome(candidate["id"], make_telemetry())
+        return served
+
+    def test_a_stretched_design_follows_a_run_of_clears(self):
+        mgr = AdaptiveEvolutionManager("stretch", stretch_after=4, persist=False)
+        served = self.play_clears(mgr, 9)
+        sources = [c.get("mutation_source") for c in served]
+        # The 5th design (after 4 clears) and the 9th (4 later) are stretched.
+        assert [i for i, s in enumerate(sources) if s == "stretch"] == [4, 8]
+        assert mgr.stats["stretches_served"] == 2
+        # The first stretch goes halfway to the upper bounds, the second three quarters.
+        for index, fraction in ((4, 0.5), (8, 0.75)):
+            stretched = served[index]
+            parent = next(g for g in mgr.hall_of_fame if g["id"] == stretched["parent_id"])
+            for key in mgr.space.scalars:
+                _, hi = mgr.space.bounds[key]
+                expected = parent["params"][key] + fraction * (hi - parent["params"][key])
+                assert abs(stretched["params"][key] - expected) < 1e-9
+
+    def test_no_stretch_once_the_player_has_failed(self):
+        mgr = AdaptiveEvolutionManager("stretch-fail", stretch_after=3, persist=False)
+        self.play_clears(mgr, 2)
+        candidate, _ = mgr.get_next_candidate()
+        mgr.report_outcome(candidate["id"], make_telemetry(exit_reached=False, quit_early=True))
+        served = self.play_clears(mgr, 6)
+        assert all(c.get("mutation_source") != "stretch" for c in served)
+
+    def test_no_stretch_without_the_surrogate_or_when_off(self):
+        for mgr in (AdaptiveEvolutionManager("stretch-mc", stretch_after=3, use_surrogate=False, persist=False),
+                    AdaptiveEvolutionManager("stretch-off", stretch_after=0, persist=False)):
+            served = self.play_clears(mgr, 8)
+            assert all(c.get("mutation_source") != "stretch" for c in served)

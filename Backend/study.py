@@ -1,14 +1,23 @@
 """
 Support for the within-subjects human study (docs/HUMAN_STUDY_PROTOCOL.md).
 
-Each participant plays two sessions, one per condition, in counterbalanced
-order:
-  MC   minimal criterion search without the surrogate (every design played)
-  GP   minimal criterion search with the epistemic surrogate gate
+There are two studies. In each, a participant plays two sessions, one per
+condition, in counterbalanced order.
+
+Study 1, "search" — the evolution loop, with the tactical director off:
+  MC    minimal criterion search without the surrogate (every design played)
+  GP    minimal criterion search with the epistemic surrogate gate
+Study 2, "director" — the tactical director:
+  DOFF  tactical director off
+  DON   tactical director on, with live re-tasking
+In study 2 both sessions of a participant play the same fixed sequence of
+random designs (seeded by the participant number), so the director is the
+only difference between them.
+
 Each session gets its own player id ("<participant>-<condition>"), so each
 archive and surrogate is trained only on that participant's trials in that
-condition. The adaptive tactical director is switched off in the client for
-study sessions, so it cannot confound the comparison.
+condition. In study 1 the client switches the tactical director off, so it
+cannot confound the comparison; study 2 compares exactly that.
 
 At the end of a session the participant replays a random sample of their
 archive (the replay block): those outcomes estimate how many archived
@@ -36,8 +45,15 @@ PARTICIPANT_ID_PATTERN = r"^P[0-9]{2,3}$"
 CONDITIONS = {
     "MC": {"use_surrogate": False, "gate_uncertainty": "epistemic", "bootstrap": "random"},
     "GP": {"use_surrogate": True, "gate_uncertainty": "epistemic", "bootstrap": "random"},
+    "DOFF": {"use_surrogate": False},
+    "DON": {"use_surrogate": False},
 }
-REPLAY_SAMPLE_SIZE = 4
+# Which conditions each study compares (reference condition first), and
+# whether the client keeps the tactical director on.
+STUDIES = {"search": ("MC", "GP"), "director": ("DOFF", "DON")}
+DIRECTOR_ON = {"MC": False, "GP": False, "DOFF": False, "DON": True}
+# Designs replayed per session (12: see the H2 power analysis, Review_2/paper/experiments/power.py).
+REPLAY_SAMPLE_SIZE = 12
 ITEMS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "study_items.json")
 
 
@@ -49,12 +65,22 @@ def is_valid_participant_id(participant_id: str) -> bool:
     return bool(re.match(PARTICIPANT_ID_PATTERN, participant_id or ""))
 
 
-def condition_for(participant_id: str, session_number: int) -> str:
-    """Counterbalanced order: odd-numbered participants play MC first, even
-    ones GP first."""
+def condition_for(participant_id: str, session_number: int, study: str = "search") -> str:
+    """Counterbalanced order: odd-numbered participants play the study's
+    reference condition (MC, or DOFF) first, even ones second."""
+    reference, other = STUDIES[study]
     number = int(participant_id[1:])
-    first, second = ("MC", "GP") if number % 2 == 1 else ("GP", "MC")
+    first, second = (reference, other) if number % 2 == 1 else (other, reference)
     return first if session_number == 1 else second
+
+
+def settings_for(participant_id: str, condition: str, study: str) -> dict[str, Any]:
+    """The backend settings of one session; study 2 replaces evolution by a
+    design sequence that depends only on the participant."""
+    settings = dict(CONDITIONS[condition])
+    if study == "director":
+        settings["fixed_sequence_seed"] = int(participant_id[1:])
+    return settings
 
 
 def player_id_for(participant_id: str, condition: str) -> str:
@@ -100,7 +126,7 @@ class ReplayBlock:
         self._pending: dict[str, dict[str, Any]] = {}
 
     def sample(self, manager: Any, n: int = REPLAY_SAMPLE_SIZE, seed: Optional[int] = None) -> list[dict[str, Any]]:
-        archive = manager.hall_of_fame
+        archive = manager.archive_in_force
         rng = random.Random(seed)
         chosen = rng.sample(archive, min(n, len(archive))) if archive else []
         out = []

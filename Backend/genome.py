@@ -115,16 +115,18 @@ def make_default_genome() -> dict[str, Any]:
     }
 
 
-def make_random_genome(space: Optional[GenomeSpace] = None) -> dict[str, Any]:
+def make_random_genome(space: Optional[GenomeSpace] = None, rng: Any = None) -> dict[str, Any]:
     """Evolved genes drawn uniformly within their bounds; the mix from one
-    uniform weight per evolved archetype, normalized."""
+    uniform weight per evolved archetype, normalized. `rng` (a random.Random)
+    defaults to the module-level generator."""
     space = space or get_space()
+    rng = rng or random
     params = _neutral_params()
     for key in space.scalars:
         lo, hi = space.bounds[key]
-        params[key] = random.uniform(lo, hi)
+        params[key] = rng.uniform(lo, hi)
 
-    params["enemy_behavior_mix"] = _random_behavior_mix(space)
+    params["enemy_behavior_mix"] = _random_behavior_mix(space, rng)
 
     return {
         "id": new_genome_id(),
@@ -134,8 +136,9 @@ def make_random_genome(space: Optional[GenomeSpace] = None) -> dict[str, Any]:
     }
 
 
-def _random_behavior_mix(space: GenomeSpace) -> dict[str, float]:
-    weights = {b: random.random() for b in space.behaviors}
+def _random_behavior_mix(space: GenomeSpace, rng: Any = None) -> dict[str, float]:
+    rng = rng or random
+    weights = {b: rng.random() for b in space.behaviors}
     total = sum(weights.values()) or 1.0
     return {b: weights.get(b, 0.0) / total for b in BEHAVIOR_TYPES}
 

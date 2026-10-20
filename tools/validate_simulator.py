@@ -11,6 +11,10 @@ JSON record per trial and prints the rank correlation between nominal
 threat and the damage taken.
 
     python tools/validate_simulator.py --designs 80 --trials 2 --out Backend/data/validation.jsonl
+    python tools/validate_simulator.py --designs 80 --trials 2 --map-seed 1 --out validation_map1.jsonl
+
+The same --seed gives the same designs, so runs on different layouts can be
+compared design by design.
 
 The bot is not a model of a person either: it walks straight to the exit
 and fights only what is in its way, so it meets a fraction of the enemies.
@@ -98,6 +102,8 @@ def main() -> None:
     parser.add_argument("--bot-dodge", type=float, default=0.5)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--map-seed", type=int, default=None,
+                        help="play on another layout than the fixed evaluation map (generality check)")
     parser.add_argument("--base-port", type=int, default=8101)
     parser.add_argument("--out", default=os.path.join(ROOT, "Backend", "data", "validation.jsonl"))
     parser.add_argument("--godot", default=os.getenv("GODOT", shutil.which("godot-mono") or shutil.which("godot") or "godot"))
@@ -105,6 +111,8 @@ def main() -> None:
 
     random.seed(args.seed)
     designs = [genome_lib.make_random_genome(genome_lib.FULL_SPACE)["params"] for _ in range(args.designs)]
+    if args.map_seed is not None:
+        designs = [{**d, "map_seed": args.map_seed} for d in designs]
     plays = [d for d in designs for _ in range(args.trials)]
     shards = [plays[i::args.workers] for i in range(args.workers)]
 
@@ -131,6 +139,7 @@ def main() -> None:
         for r in records:
             r["threat"] = sp.raw_threat(r["params"], dodge=args.bot_dodge)
             r["bot_dodge"] = args.bot_dodge
+            r["map_seed"] = r["params"]["map_seed"]
             f.write(json.dumps(r) + "\n")
 
     threat = [r["threat"] for r in records]

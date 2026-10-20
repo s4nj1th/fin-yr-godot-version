@@ -191,9 +191,11 @@ public sealed class AdaptationDirector
     }
 
     /// <summary>Adds the stealth-countermeasure part of an order, scaled by the profile.</summary>
-    public static void GrantStealthCountermeasure(EnemyTacticalOrder order, PlayerPlaystyleProfile profile)
+    public static void GrantStealthCountermeasure(EnemyTacticalOrder order, PlayerPlaystyleProfile profile,
+        bool intercept = false)
     {
         order.SearchLastKnownPosition = true;
+        order.InterceptRoute = intercept;
         order.PreferAlternateRoute = profile.StealthPreference > 0.7f;
         order.SearchRadius = Lerp(3f, 6f, profile.StealthPreference);
     }
@@ -207,6 +209,7 @@ public sealed class AdaptationDirector
     public static void RevokeStealthCountermeasure(EnemyTacticalOrder order)
     {
         order.SearchLastKnownPosition = false;
+        order.InterceptRoute = false;
         order.PreferAlternateRoute = false;
     }
 
@@ -215,6 +218,12 @@ public sealed class AdaptationDirector
     /// per-enemy coverage (section 9) means not every spawn gets the active
     /// countermeasure even when one is active.
     /// </summary>
+    /// <summary>
+    /// Whether the stealth countermeasure intercepts the player on their
+    /// route to the exit (true) or searches where they were last seen.
+    /// </summary>
+    public bool InterceptRoute { get; set; }
+
     public EnemyTacticalOrder CreateOrderForNewEnemy(PlayerPlaystyleProfile profile)
     {
         var order = EnemyTacticalOrder.None();
@@ -227,7 +236,7 @@ public sealed class AdaptationDirector
 
         if (StealthCountermeasureActive && _random.NextDouble() < coverage)
         {
-            GrantStealthCountermeasure(order, profile);
+            GrantStealthCountermeasure(order, profile, InterceptRoute);
         }
 
         return order;

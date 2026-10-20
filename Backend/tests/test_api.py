@@ -155,3 +155,22 @@ def test_replays_are_recorded_without_touching_the_archive(client):
     assert stats_after["hall_of_fame_size"] == stats_before["hall_of_fame_size"]
     assert stats_after["real_evaluations"] == stats_before["real_evaluations"]
     assert study.read_records("replays")[0]["passed"] is False
+
+
+def test_director_study_assigns_director_conditions(client):
+    first = client.post("/api/study/session", json={"participant_id": "P07", "session_number": 1, "study": "director"}).json()
+    second = client.post("/api/study/session", json={"participant_id": "P07", "session_number": 2, "study": "director"}).json()
+    assert (first["condition"], first["director"]) == ("DOFF", False)
+    assert (second["condition"], second["director"]) == ("DON", True)
+    assert client.get("/api/stats?player_id=P07-DON").json()["use_surrogate"] is False  # a fixed design sequence
+
+
+def test_director_study_serves_the_same_designs_in_both_sessions(client):
+    for n in (1, 2):
+        client.post("/api/study/session", json={"participant_id": "P08", "session_number": n, "study": "director"})
+    designs = {}
+    for player in ("P08-DOFF", "P08-DON"):
+        designs[player] = [client.post(f"/api/next_candidate?player_id={player}").json()["genome"]["params"]
+                           for _ in range(3)]
+    assert designs["P08-DOFF"] == designs["P08-DON"]
+    assert designs["P08-DOFF"][0] != designs["P08-DOFF"][1]

@@ -128,3 +128,49 @@ def test_ard_kernel_learns_one_length_scale_per_gene():
         surrogate.add_example(g["params"], passed=g["params"]["enemy_density"] < 0.25)
     length_scales = surrogate._model.kernel_.k1.k2.length_scale
     assert len(length_scales) == genome.FULL_SPACE.dimension
+
+
+# --- GP classification -----------------------------------------------------
+
+
+def trained_classifier(n=30):
+    surrogate = Surrogate(min_labels=5, model="classifier")
+    for i in range(n):
+        density = 0.5 * i / (n - 1)
+        surrogate.add_example(make_params(enemy_density=density), density < 0.25)
+    return surrogate
+
+
+def test_classifier_predicts_pass_where_the_player_passed_and_fail_where_they_failed():
+    surrogate = trained_classifier()
+    assert surrogate.is_ready()
+    easy, _, _ = surrogate.predict_detailed(make_params(enemy_density=0.05))
+    hard, _, _ = surrogate.predict_detailed(make_params(enemy_density=0.45))
+    assert easy > 0.6 and hard < 0.4
+
+
+def test_classifier_uncertainty_is_a_valid_split():
+    # Total std is that of a Bernoulli outcome; the epistemic part (the std
+    # of the pass probability itself) can never exceed it.
+    surrogate = trained_classifier()
+    for density in (0.05, 0.25, 0.45):
+        prob, total, epistemic = surrogate.predict_detailed(make_params(enemy_density=density))
+        assert abs(total - (prob * (1 - prob)) ** 0.5) < 1e-9
+        assert 0.0 <= epistemic <= total + 1e-9
+    assert surrogate.noise_level == 0.0
+
+
+def test_classifier_probability_matches_scikit_learn():
+    import numpy as np
+    surrogate = trained_classifier()
+    params = [make_params(enemy_density=d) for d in (0.1, 0.2, 0.3)]
+    ours = surrogate.predict_batch(params)[0]
+    theirs = surrogate._model.predict_proba(np.array([genome_to_features(p) for p in params]))[:, 1]
+    # Exact quadrature of E[sigmoid(f)] vs scikit-learn's probit approximation of it.
+    assert np.max(np.abs(ours - theirs)) < 0.05
+
+
+def test_unknown_model_is_rejected():
+    import pytest
+    with pytest.raises(ValueError):
+        Surrogate(min_labels=2, model="forest")

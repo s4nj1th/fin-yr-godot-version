@@ -2,16 +2,18 @@
 Online surrogate model that lets the archive grow without spending a real
 playthrough on every candidate. See docs/EVOLUTIONARY_DESIGN.md.
 
-Implementation note / honest simplification: a calibrated approach would use
-Gaussian Process *Classification* on the binary pass/fail labels.
-scikit-learn's GaussianProcessClassifier exposes a calibrated predict_proba
-but, because it fits the latent function via a Laplace approximation, does
-not expose a simple per-point predictive variance the way
-GaussianProcessRegressor does. Since the uncertainty-gated infill criterion
-needs both a probability-like mean AND a variance from one model, this fits a
-GaussianProcessRegressor directly on the binary {0, 1} pass/fail labels
-instead. This is a common pragmatic proxy (not "textbook" GP classification)
-— call this out explicitly in the report as a documented simplification.
+Two models (config.SURROGATE_MODEL):
+
+- "regressor" (default): a GaussianProcessRegressor fitted directly on the
+  binary {0, 1} labels, with a WhiteKernel term for the outcome noise. A
+  common pragmatic proxy, not textbook GP classification; its epistemic std
+  is recovered by subtracting the fitted noise from the predictive variance.
+- "classifier": GP classification with a logistic likelihood (scikit-learn's
+  GaussianProcessClassifier, Laplace approximation). Its outcome noise is the
+  Bernoulli likelihood itself, so the epistemic std is simply the std of the
+  pass probability sigmoid(f) under the latent posterior f ~ N(mu, s^2),
+  computed by Gauss-Hermite quadrature; the total std is that of a Bernoulli
+  outcome with the predicted probability.
 """
 
 from __future__ import annotations
@@ -19,7 +21,8 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import numpy as np
-from sklearn.gaussian_process import GaussianProcessRegressor
+from scipy.linalg import solve
+from sklearn.gaussian_process import GaussianProcessClassifier, GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
 
 import config
@@ -47,7 +50,7 @@ def genome_to_features(params: dict[str, Any], space: Optional[GenomeSpace] = No
 
 class Surrogate:
     def __init__(self, min_labels: int, window: int = 0, space: Optional[GenomeSpace] = None,
-                 kernel: Optional[str] = None) -> None:
+                 kernel: Optional[str] = None, model: Optional[str] = None) -> None:
         self.min_labels = min_labels
         # 0 = fit on every real outcome; N > 0 = fit on only the most recent N,
         # so the model can follow a player whose skill changes.
@@ -56,9 +59,12 @@ class Surrogate:
         self.kernel = (kernel or config.SURROGATE_KERNEL).lower()
         if self.kernel not in ("isotropic", "ard"):
             raise ValueError(f"kernel must be 'isotropic' or 'ard', not {self.kernel!r}")
+        self.model = (model or config.SURROGATE_MODEL).lower()
+        if self.model not in ("regressor", "classifier"):
+            raise ValueError(f"model must be 'regressor' or 'classifier', not {self.model!r}")
         self.x_train: list[list[float]] = []
         self.y_train: list[float] = []
-        self._model: Optional[GaussianProcessRegressor] = None
+        self._model: Optional[Any] = None
 
     def is_ready(self) -> bool:
         return len(self.y_train) >= self.min_labels and self._model is not None
@@ -89,6 +95,9 @@ class Surrogate:
         if self._model is None:
             return 0.5, 1.0, 1.0  # maximally uncertain fallback before the model is trained
 
+        if self.model == "classifier":
+            prob, total, epistemic = self.predict_batch([params])
+            return float(prob[0]), float(total[0]), float(epistemic[0])
         features = np.array([genome_to_features(params, self.space)])
         mean, std = self._model.predict(features, return_std=True)
         prob = float(np.clip(mean[0], 0.0, 1.0))
@@ -97,15 +106,45 @@ class Surrogate:
         return prob, total_std, epistemic
 
     def predict_mean(self, params_list: list[dict[str, Any]]) -> np.ndarray:
-        """Unclipped posterior means for several genomes at once."""
+        """Unclipped posterior means (the classifier: pass probabilities) for
+        several genomes at once."""
         if self._model is None:
             return np.full(len(params_list), 0.5)
+        if self.model == "classifier":
+            return self.predict_batch(params_list)[0]
         return self._model.predict(np.array([genome_to_features(p, self.space) for p in params_list]))
+
+    def predict_batch(self, params_list: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(pass probability, total std, epistemic std) for several genomes."""
+        n = len(params_list)
+        if self._model is None:
+            return np.full(n, 0.5), np.ones(n), np.ones(n)
+        features = np.array([genome_to_features(p, self.space) for p in params_list])
+        if self.model == "regressor":
+            mean, std = self._model.predict(features, return_std=True)
+            return (np.clip(mean, 0.0, 1.0), std,
+                    np.sqrt(np.maximum(0.0, std ** 2 - self.noise_level)))
+        # Latent posterior of the Laplace approximation (as in scikit-learn's
+        # predict_proba), then E[sigmoid(f)] and Var[sigmoid(f)] by quadrature.
+        est = self._model.base_estimator_
+        k_star = est.kernel_(est.X_train_, features)
+        mu = k_star.T.dot(est.y_train_ - est.pi_)
+        v = solve(est.L_, est.W_sr_[:, np.newaxis] * k_star)
+        var = np.maximum(0.0, est.kernel_.diag(features) - np.einsum("ij,ij->j", v, v))
+        nodes, weights = np.polynomial.hermite.hermgauss(32)
+        f = mu[:, None] + np.sqrt(2.0 * var)[:, None] * nodes[None, :]
+        sig = 1.0 / (1.0 + np.exp(-f))
+        w = weights / np.sqrt(np.pi)
+        prob = sig @ w
+        epistemic = np.sqrt(np.maximum(0.0, (sig ** 2) @ w - prob ** 2))
+        total = np.sqrt(prob * (1.0 - prob))
+        return prob, total, epistemic
 
     @property
     def noise_level(self) -> float:
-        """Fitted outcome-noise variance (the WhiteKernel term), 0 before training."""
-        if self._model is None:
+        """Fitted outcome-noise variance (the WhiteKernel term), 0 before
+        training and for the classifier (whose noise is its likelihood)."""
+        if self._model is None or self.model == "classifier":
             return 0.0
         return float(self._model.kernel_.k2.noise_level)
 
@@ -120,6 +159,14 @@ class Surrogate:
             return
 
         length_scale = np.ones(self.space.dimension) if self.kernel == "ard" else 1.0
+        if self.model == "classifier":
+            # Wider amplitude bound than the regressor's: separable labels
+            # push the latent function's scale up.
+            kernel = ConstantKernel(1.0, (1e-2, 1e3)) * RBF(length_scale=length_scale, length_scale_bounds=(1e-2, 1e2))
+            model = GaussianProcessClassifier(kernel=kernel, n_restarts_optimizer=2)
+            model.fit(np.array(x_fit), np.array(y_fit).astype(int))
+            self._model = model
+            return
         kernel = ConstantKernel(1.0, (1e-2, 1e2)) * RBF(length_scale=length_scale, length_scale_bounds=(1e-2, 1e2)) \
             + WhiteKernel(noise_level=0.1, noise_level_bounds=(1e-4, 1.0))
 
