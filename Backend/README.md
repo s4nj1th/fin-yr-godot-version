@@ -113,9 +113,10 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-141 tests: genome (enemy-only evolution, genome spaces, fixed environment,
-sanitization, old archives), surrogate (epistemic/noise split, window, ARD),
-evolution manager (bootstrap, both gates, parent filtering, remedies,
-per-archetype criterion, settings, players, persistence), HTTP API and study endpoints, simulated
+154 tests: genome (enemy-only evolution, genome spaces, fixed environment,
+sanitization, old archives), surrogate (epistemic/noise split, window, ARD,
+GP classification), evolution manager (bootstrap, both gates, parent
+filtering, remedies, per-archetype criterion as filter and verdict, stretch
+fallback, settings, players, persistence), HTTP API and study endpoints, simulated
 player, study export and analysis, LLM-output parsing, behaviour analytics. End-to-end tests with the real game:
 [`docs/INTEGRATION_TESTING.md`](../docs/INTEGRATION_TESTING.md).

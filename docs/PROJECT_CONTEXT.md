@@ -37,8 +37,9 @@ in [ENEMY_AI.md](ENEMY_AI.md) and [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTAT
    archetype is drawn from the behaviour mix and it is an elite with
    probability `elite_rate`. `EnemyArchetypes.WithModifiers` applies the
    difficulty scale (HP, attack) and tempo (speed, wind-ups, cooldowns).
-   Each new enemy also gets a tactical order from the `AdaptationDirector`
-   (Section 4), except in study mode.
+   Each new enemy may also get a tactical order from the `AdaptationDirector`
+   (Section 4) unless the director is off (`--director=off`, and study 1 or
+   the director-off condition of study 2).
 4. **Play.** The player moves on the grid (WASD), attacks with Space (every
    0.35 s), and must reach the exit under fog of war. On death the player
    respawns at the start with full health and the trial continues.
@@ -85,9 +86,16 @@ session (see [ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md)):
   probability equal to the confidence clamped to [0.3, 0.9]; with live
   re-tasking, up to 6 enemies already within 10 tiles of the player take it
   when it switches on, and all drop it when it switches off.
-- Enemies with a stealth order use `EnemyPerception` (unaware → tracking →
-  investigating 3 s → searching 5 s → returning 3 s), `GridLineOfSight` and
-  BFS (`GridPathfinder`) to search the player's last known position.
+- The stealth countermeasure has two forms (`--stealth=intercept|search`).
+  **Intercept** (the default) sends an enemy that loses the player to the
+  earliest cell of the player's shortest route to the exit that it can reach
+  no later than the player, at least three cells ahead, or else to the exit,
+  and holds it there for up to 20 s (`InterceptPlanner`). **Search** uses
+  `EnemyPerception` (unaware → tracking → investigating 3 s → searching 5 s →
+  returning 3 s), `GridLineOfSight` and BFS (`GridPathfinder`) to search the
+  player's last known position.
+- `--director=off|spawn|live` (default `live`) turns the director off, gives
+  orders to new spawns only, or also re-tasks enemies on the map.
 
 ## 5. Fog of war
 
@@ -107,12 +115,14 @@ discovery texture records what the player has seen.
 
 ## 7. Automated tests
 
-- `Tests/` (xUnit, `dotnet test`, 76 tests): the engine-independent AI code —
+- `Tests/` (xUnit, `dotnet test`, 82 tests): the engine-independent AI code —
   archetype catalog and modifiers, telegraph geometry, attack-direction
   classification, line of sight, pathfinding, playstyle profile, adaptation
-  director and live re-tasking, behaviour telemetry, exit bot and fighter bot.
-- `Backend/tests/` (pytest, 141 tests): genome spaces, surrogate, evolution
-  manager, remedies and the per-archetype criterion, HTTP API and study endpoints, simulated player,
+  director, live re-tasking and intercept planning, behaviour telemetry, exit
+  bot and fighter bot.
+- `Backend/tests/` (pytest, 154 tests): genome spaces, surrogate (regressor and
+  classifier), evolution manager, remedies, the per-archetype criterion and
+  the stretch fallback, HTTP API and study endpoints, simulated player,
   LLM-output parsing, behaviour analytics, study export and analysis.
 - [INTEGRATION_TESTING.md](INTEGRATION_TESTING.md): end-to-end runs of the
   real game against the real backend.

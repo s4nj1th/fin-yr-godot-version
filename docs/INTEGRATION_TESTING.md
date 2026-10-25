@@ -1,7 +1,7 @@
 # Integration Testing
 
-Unit tests check each module on its own (`Backend/tests/`, 141 tests;
-`Tests/`, 76 tests). The scripts in [`tools/`](../tools/) check the real game
+Unit tests check each module on its own (`Backend/tests/`, 154 tests;
+`Tests/`, 82 tests). The scripts in [`tools/`](../tools/) check the real game
 and the real backend working together and measure the game for the
 simulated player. They run the Godot game headless with a fixed frame time
 (`--fixed-fps 60`), so a run plays as fast as the machine allows and is

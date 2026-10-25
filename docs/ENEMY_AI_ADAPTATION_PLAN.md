@@ -1,8 +1,31 @@
-# Adaptive Enemy AI Plan
+# Adaptive Enemy AI — Design and Implementation
 
-This document describes the planned system for enemies that adapt to the player's repeated behavior. It is a design and implementation plan, not a description of functionality that is already present in the current branch.
+This document is the design of the within-session adaptive enemy AI (the
+*tactical director*). It was written as a plan before the system existed;
+phases 1 to 6 below are now implemented, and the in-game evaluation of
+phase 7 has been run. The section **Implementation status** says what was
+built and where it differs from the plan; the rest of the document is kept
+as the design rationale. The baseline enemy behaviour is documented in
+[ENEMY_AI.md](ENEMY_AI.md).
 
-The current baseline is documented in [ENEMY_AI.md](ENEMY_AI.md). Today, enemies receive the player's exact grid position and choose movement through hard-coded behavior branches in [Scripts/Entities/EnemyController.cs](../Scripts/Entities/EnemyController.cs). The adaptive system should be built above that baseline in small, testable stages.
+## Implementation status
+
+| Plan | Implemented as |
+|---|---|
+| Player telemetry (§4–5) | `Scripts/AI/PlayerBehaviorTelemetry.cs`: hits by direction (front, side, rear), line-of-sight breaks, retreats, kiting. A hit counts as a rear hit when the struck enemy lies behind the player's heading and had not yet noticed the player (`AttackDirection.cs`). |
+| Playstyle profile (§6) | `PlayerPlaystyleProfile.cs`: tendencies blended with exponential decay 0.8; a confidence that rises linearly to 1 after three hits or line-of-sight breaks. |
+| Perception and last-known position (§7) | `EnemyPerception.cs`: unaware → tracking → investigating (3 s) → searching (5 s) → returning (3 s), by grid line of sight (`GridLineOfSight.cs`). |
+| Pathfinding (§12) | Breadth-first search (`GridPathfinder.cs`). |
+| Director and orders (§9) | `AdaptationDirector.cs`, `EnemyTacticalOrder.cs`. Safeguards as planned: evidence and confidence thresholds, an 8 s reactivation cooldown and equal minimum duration, and coverage equal to the confidence clamped to [0.3, 0.9]. |
+| Rear defence (§10) | Activates after at least three rear hits with a rear-hit preference above 0.35 and confidence above 0.5 (not the 0.6 sketched below); shortens an enemy's remaining attack cooldown after a rear hit. |
+| Hiding countermeasure (§11) | Activates after at least three line-of-sight breaks with confidence above 0.5, in two forms (`--stealth=`): **search** — go to the last known position and search around it; **intercept** (the default) — head for the earliest cell of the player's shortest route to the exit that the enemy can reach no later than the player, at least three cells ahead, or else guard the exit, and wait there for up to 20 s (`InterceptPlanner.cs`). Intercept is the plan's "guard a likely exit" / `CutOffEscape`. |
+| Live re-tasking | When a countermeasure switches on, up to 6 enemies within 10 tiles of the player, nearest first, take it; all drop it when it switches off (`--director=live`, the default; `spawn` = new enemies only; `off`). |
+| Evaluation (§14, phase 7) | `tools/evaluate_director.py`: a scripted bot that hides, 30 paired sessions per condition. Intercept lowered the exit rate from 92% to 83–85% and lengthened crossings (Holm-corrected p ≤ 0.017); search had no effect that survived correction ([INTEGRATION_TESTING.md](INTEGRATION_TESTING.md), section 5). |
+| Not implemented | Rolling windows other than the exponential decay; class-specific responses (scout, boss); group coordination such as sharing the last known position; occupancy checks for ordinary movement; LLM commentary (§13) — the director is fully deterministic and needs no network. |
+
+In the human study the director is off in study 1 and on (with live
+re-tasking) in one of the two conditions of study 2
+([HUMAN_STUDY_PROTOCOL.md](HUMAN_STUDY_PROTOCOL.md)).
 
 ## 1. Design Goal
 
@@ -55,16 +78,16 @@ Chooses which countermeasures to activate, how strong they should be, which enem
 
 Executes the tactical order through deterministic movement, perception, combat, and pathfinding rules. This remains the final authority for movement and combat decisions.
 
-## 3. What the Current Code Is Missing
+## 3. What the Code Was Missing (before this work)
 
-The current [EnemyController.cs](../Scripts/Entities/EnemyController.cs) knows:
+At the time of the plan, [EnemyController.cs](../Scripts/Entities/EnemyController.cs) knows:
 
 - Its integer `GridPos`.
 - The player's exact position.
 - The complete walkability grid.
 - Its fixed behavior string and combat stats.
 
-It does not currently know:
+It did not know (all but the occupancy check are now implemented):
 
 - Which direction the player is facing.
 - Whether an attack came from the front, side, or rear.
@@ -320,8 +343,8 @@ when a countermeasure switches on, the living enemies within
 `RetaskRadius` (10 tiles) of the player, nearest first, each take it with
 the same probability as a new spawn (the profile's confidence, clamped to
 [0.3, 0.9]), at most `MaxRetaskedPerActivation` (6) per activation; when a
-countermeasure switches off, every enemy drops it. Study sessions keep the
-director off.
+countermeasure switches off, every enemy drops it. In the human study the
+director is off in study 1 and on in one condition of study 2.
 
 ## 10. Countermeasure: Repeated Rear Attacks
 
@@ -472,11 +495,11 @@ Create repeatable scenarios:
 
 Measure both whether the enemy adapts and whether the response remains fair and understandable.
 
-Related, already built: [BEHAVIOR_ANALYTICS.md](BEHAVIOR_ANALYTICS.md)
-instruments and visualizes per-archetype combat outcomes split by
-baseline vs. adapted, from real trials — a step toward this phase's
-"measure whether the enemy adapts," though not yet the repeatable
-scripted scenarios this phase calls for.
+Built: [BEHAVIOR_ANALYTICS.md](BEHAVIOR_ANALYTICS.md) instruments and
+visualizes per-archetype combat outcomes split by baseline vs. adapted, and
+`tools/evaluate_director.py` runs the repeatable scripted scenario for
+repeated hiding (a bot that breaks line of sight, the same designs in every
+condition) — see Implementation status above.
 
 ## 15. First Milestone
 

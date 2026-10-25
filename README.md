@@ -11,8 +11,9 @@ player on two timescales:
   decides the designs it is confident about, so the player's time is spent
   where the model is unsure.
 - **Within a session**, a rule-based director watches the player's habits
-  (rear attacks, breaking line of sight) and gives newly spawned enemies
-  matching tactics.
+  (rear attacks, breaking line of sight) and gives enemies matching tactics:
+  newly spawned ones and, with live re-tasking, those already near the
+  player.
 
 23CSE498 Project Phase 2 · Team 5 · Amrita School of Computing, Coimbatore ·
 Guide: Ms. Anisha Radhakrishnan
@@ -120,10 +121,15 @@ refits the surrogate on the outcome.
 | Optional LLM mutation | Anthropic / OpenAI API or a local Ollama model |
 | Tests | xUnit (C#), pytest (Python), end-to-end script |
 
-## Run it
+## Installation and running
 
 **Prerequisites:** Godot 4.7 .NET edition, .NET SDK 8, Python 3.10+.
 
+0. **Get the code**
+   ```bash
+   git clone https://github.com/s4nj1th/fin-yr-godot-version.git
+   cd fin-yr-godot-version
+   ```
 1. **Backend**
    ```bash
    cd Backend
@@ -211,6 +217,10 @@ Headline findings (50 runs per condition, intermediate player unless stated):
 | `docs/` | design documents |
 
 ## Documentation
+
+**Project website and documentation portal:**
+<https://adaptive-enemy-encounters.vercel.app> (installation, architecture,
+API reference, configuration, human study, testing).
 
 - [EVOLUTIONARY_DESIGN.md](docs/EVOLUTIONARY_DESIGN.md) — the evolution system, terminology, what evolves and why
 - [INTEGRATION_TESTING.md](docs/INTEGRATION_TESTING.md) — end-to-end tests, duel measurements and the choice of the fixed map

@@ -2,8 +2,9 @@
 
 This document describes the instrumentation and analysis pipeline that
 answers, from data rather than from reading the movement code: how does
-each enemy AI archetype (`melee_chaser`, `melee_hit_run`, `ranged_kite`,
-`ranged_strafe`) actually behave in combat, how does that differ from the
+each of the seven enemy archetypes (`melee_chaser`, `melee_hit_run`,
+`ranged_kite`, `ranged_strafe`, `melee_charger`, `ranged_bomber`,
+`melee_shield`) actually behave in combat, how does that differ from the
 other archetypes, and how does it change across the evolutionary loop's
 generations. It is separate from, and downstream of, the two systems it
 draws on — [ENEMY_AI.md](ENEMY_AI.md) (what each archetype's movement rule
@@ -31,8 +32,8 @@ trial-level sum.
 A per-trial (reset every `RegenerateDungeon`) counter set, keyed by
 archetype and then by **situation** — `baseline` vs. `adapted`, meaning
 whether the specific enemy involved carried an active
-`AdaptationDirector` tactical order (rear-guard and/or last-known-position
-search) at the time of the event. The situation split is recorded from
+`AdaptationDirector` tactical order (rear defence and/or the stealth
+countermeasure, intercept or search) at the time of the event. The situation split is recorded from
 that enemy's own `TacticalOrder` at the moment of each event, not
 approximated afterwards from trial-level totals — an "adapted
 `ranged_kite`" data point really is one, not a proportional estimate.
@@ -150,7 +151,7 @@ silent gap) if their prerequisite data isn't there yet:
 
 ## Outliers and thresholds
 
-The four charts above show *aggregates* — one number (or one bar per
+The first four charts above show *aggregates* — one number (or one bar per
 situation) per archetype. That hides two things worth surfacing
 separately, because they answer different questions than "what's the
 average":
@@ -236,8 +237,8 @@ scale with a differently-scaled one.
 
 ## Honest limitations (don't oversell these in a writeup)
 
-- **Sparse real data, same as the rest of the human-coupled loop.** As of
-  this writing `session_log.jsonl` has 35 total entries (25 tagged human, 10 bot;
+- **Sparse real data, same as the rest of the human-coupled loop.** When
+  this pipeline was built (September 2026) `session_log.jsonl` had 35 total entries (25 tagged human, 10 bot;
   29 with complete `enemy_behavior_breakdown` telemetry).`genome_mix_evolution.png`
   is the only chart with historical data across all trials.
 - **The scripted bot evaluator (`EVOLUTIONARY_DESIGN.md` "Scripted bot

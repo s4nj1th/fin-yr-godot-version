@@ -300,6 +300,7 @@ assigns the counterbalanced condition. See
 - A pass/fail archive, not a quality-diversity grid; the criterion bounds
   difficulty only from above, so archives contain many comfortable designs
   (`MIN_DAMAGE_TAKEN` adds a lower bound).
-- All quantitative results so far come from the simulated player; the
-  human study ([protocol](HUMAN_STUDY_PROTOCOL.md)) is implemented and
-  tested with the bot, and is the next step.
+- All quantitative results so far come from the simulated player and from
+  scripted bots in the real game; no human data have been collected. The
+  human study ([protocol](HUMAN_STUDY_PROTOCOL.md)) is implemented and has
+  been run end to end with scripted participants, and is the next step.

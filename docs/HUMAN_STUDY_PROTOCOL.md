@@ -156,7 +156,7 @@ failed every trial (perfect separation). Both scripts are covered by
 | Fatigue or frustration | 30-minute sessions on separate days; participants may stop at any time; the game has no flashing lights or graphic content |
 | Learning effects between sessions | counterbalanced order; trial number as covariate |
 | The researcher's expectations | the condition is assigned by the backend and not shown on screen |
-| Too few archived designs for the replay block | the replay sample is whatever the archive holds (at most four); sessions with an empty archive are reported separately |
+| Too few archived designs for the replay block | the replay sample is whatever the archive holds (at most twelve); sessions with an empty archive are reported separately |
 
 ## 7. Dry run with scripted participants
 

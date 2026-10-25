@@ -152,7 +152,7 @@ Each archetype is built from primitive meshes (no external art assets) in its ow
 
 ## 11. Current Limitations and Extension Points
 
-The baseline movement described above is intentionally lightweight and easy to inspect. Enemies that receive a stealth countermeasure order already use line of sight within their vision range (`GridLineOfSight`) and breadth-first search (`GridPathfinder`) to search the player's last known position ([ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md)). Remaining upgrades:
+The baseline movement described above is intentionally lightweight and easy to inspect. Enemies that receive a stealth countermeasure order already plan routes on the grid: with **intercept** (the default) they head for a cell ahead of the player on the player's shortest route to the exit (`InterceptPlanner`, breadth-first distances) and wait there; with **search** they use line of sight within their vision range (`GridLineOfSight`) and breadth-first search (`GridPathfinder`) to search the player's last known position ([ENEMY_AI_ADAPTATION_PLAN.md](ENEMY_AI_ADAPTATION_PLAN.md)). Remaining upgrades:
 
 1. Use BFS or A\* for ordinary chasing too, when an obstacle blocks direct progress.
 2. Add occupancy checks so enemies do not select the same cell during ordinary movement (dashes and pack placement already respect occupancy).
