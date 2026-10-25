@@ -23,8 +23,11 @@ the same fixed map, just without evolution.
 
 ## Endpoints
 
-Every endpoint takes an optional `player_id` query parameter (default
-`default`); each player has their own archive and surrogate.
+The game-loop endpoints (`health`, `stats`, `next_candidate`,
+`report_outcome`) take an optional `player_id` query parameter (default
+`default`); each player has their own archive and surrogate. The study
+endpoints take the player id in the request body; `replay_sample` requires
+it as a query parameter.
 
 | Method | Path | Returns |
 |---|---|---|

@@ -161,7 +161,7 @@ pragmatic proxy that exposes a per-point variance the gate needs.
 
 Each player has their own manager — archive, surrogate, counters — saved in
 `Backend/data/players/<player_id>.json`. The client sends its player id
-(`GameManager.PlayerId`, or `--player=NAME`); every endpoint takes a
+(`GameManager.PlayerId`, or `--player=NAME`); the game-loop endpoints take a
 `player_id` query parameter (default `default`). Designs evolved for one
 player do not suit another (in the simulation, designs evolved for an expert
 were failed 59% of the time by a novice, against 10% for the novice's own),
