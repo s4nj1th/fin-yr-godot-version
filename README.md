@@ -208,7 +208,7 @@ Headline findings (50 runs per condition, intermediate player unless stated):
 
 | Path | Contents |
 |---|---|
-| `Main.tscn`, `Scripts/` | game client: `Core/` (game loop, rendering), `AI/` (enemy AI, director, bot), `Entities/`, `Network/`, `UI/`, `Data/` |
+| `Main.tscn`, `Scripts/` | game client: `Core/` (game loop, rendering, duel and study modes), `AI/` (enemy AI, director, bots), `Entities/` (enemies, visuals, telegraphs), `Network/` (back-end client), `UI/` (HUD, study screens), `Data/` (data contracts), `Audio/` (procedural sound effects) |
 | `Scenes/` | enemy-AI sandbox scenes and the enemy gallery |
 | `study/` | participant information sheet (template) for the human study |
 | `Tests/` | C# unit tests |

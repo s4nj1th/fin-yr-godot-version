@@ -4,7 +4,7 @@
 
 # Godot 4 internal cache and metadata directory
 .godot/
-*.uid
+# (*.uid files are committed, as Godot 4.4+ recommends)
 
 # Godot 3 / Legacy import cache (if any)
 .import/

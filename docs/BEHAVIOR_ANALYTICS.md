@@ -210,7 +210,7 @@ feature:**
   real QD grid, but the same idea in miniature, and a natural place to
   grow from if a proper MAP-Elites archive gets built later.
 - **It's a bug-detection tripwire.** The mislabeled-evaluator bug found
-  while building the bot evaluator (see `HANDOFF_BOT_TELEMETRY.md`) is
+  while building the bot evaluator is
   exactly the kind of thing an outlier scan would have caught faster than
   eyeballing an averaged chart — an archetype's `damage_per_spawn` jumping
   10x in one trial is either a great thesis finding or a bug, and the
